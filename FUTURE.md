@@ -1,6 +1,6 @@
 # Small ones
-* support inverted signal (LOW-active PPM) — add `--invert` flag that negates each sample
-  before threshold comparison, or just use `--threshold -1` with the current design
+* ~~support inverted signal (LOW-active PPM)~~ ✓ done — auto-detected during probing;
+  negates samples when a LOW-active signal is found on any channel
 
 # Future ideas
 

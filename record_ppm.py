@@ -62,7 +62,7 @@ def main():
 
     # Resolve device
     if args.device is None:
-        args.device, _ = discover_ppm_source(args.rate)
+        args.device, _, _ = discover_ppm_source(args.rate)
         if args.device is None:
             sys.exit(
                 'error: no PPM source detected automatically\n'

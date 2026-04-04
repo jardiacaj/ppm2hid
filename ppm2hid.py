@@ -710,12 +710,16 @@ def probe_source_for_ppm(source_name, sample_rate=AUDIO_SAMPLE_RATE,
         return None
 
     # s16le stereo layout: [L0 L1 R0 R1] per frame; channel byte offsets are 0 and 2.
+    # Try normal then inverted on each channel; prefer normal (invert=False first).
     for channel_index, channel_byte_offset in enumerate((0, 2)):
-        decoder = PpmDecoder(sample_rate=sample_rate, threshold=threshold)
-        for byte_offset in range(0, len(raw_audio) - 3, 4):
-            sample = struct.unpack_from('<h', raw_audio, byte_offset + channel_byte_offset)[0]
-            if decoder.feed(sample) is not None:
-                return channel_index
+        for invert in (False, True):
+            decoder = PpmDecoder(sample_rate=sample_rate, threshold=threshold)
+            for byte_offset in range(0, len(raw_audio) - 3, 4):
+                sample = struct.unpack_from('<h', raw_audio, byte_offset + channel_byte_offset)[0]
+                if invert:
+                    sample = -sample
+                if decoder.feed(sample) is not None:
+                    return channel_index, invert
     return None
 
 
@@ -736,36 +740,42 @@ def probe_file_for_ppm(file_path, sample_rate=AUDIO_SAMPLE_RATE,
     if len(raw_audio) < 8:
         return None
     for channel_index, channel_byte_offset in enumerate((0, 2)):
-        decoder = PpmDecoder(sample_rate=sample_rate, threshold=threshold)
-        for byte_offset in range(0, len(raw_audio) - 3, 4):
-            sample = struct.unpack_from('<h', raw_audio, byte_offset + channel_byte_offset)[0]
-            if decoder.feed(sample) is not None:
-                return channel_index
+        for invert in (False, True):
+            decoder = PpmDecoder(sample_rate=sample_rate, threshold=threshold)
+            for byte_offset in range(0, len(raw_audio) - 3, 4):
+                sample = struct.unpack_from('<h', raw_audio, byte_offset + channel_byte_offset)[0]
+                if invert:
+                    sample = -sample
+                if decoder.feed(sample) is not None:
+                    return channel_index, invert
     return None
 
 
 def discover_ppm_source(sample_rate=AUDIO_SAMPLE_RATE, threshold=AUDIO_THRESHOLD):
     """
-    Enumerate PipeWire/PulseAudio sources and return ``(source_name, channel)``
-    for the first source that carries a valid PPM signal (channel 0 = left,
-    1 = right), or ``(None, None)`` if none is found.
+    Enumerate PipeWire/PulseAudio sources and return ``(source_name, channel, invert)``
+    for the first source that carries a valid PPM signal (channel 0 = left, 1 = right;
+    invert=True if the signal is LOW-active), or ``(None, None, False)`` if none found.
     """
     sources = list_pipewire_sources()
     if not sources:
         print('Auto-discovery: no PipeWire/PulseAudio sources found')
-        return None, None
+        return None, None, False
 
     print(f'Auto-discovery: probing {len(sources)} source(s) for PPM signal …')
     for source in sources:
         print(f'  {source} … ', end='', flush=True)
-        channel = probe_source_for_ppm(source, sample_rate=sample_rate, threshold=threshold)
-        if channel is not None:
-            print(f'PPM detected ({"left" if channel == 0 else "right"} channel)')
-            return source, channel
+        result = probe_source_for_ppm(source, sample_rate=sample_rate, threshold=threshold)
+        if result is not None:
+            channel, invert = result
+            ch_name  = 'left' if channel == 0 else 'right'
+            inv_note = ', inverted' if invert else ''
+            print(f'PPM detected ({ch_name} channel{inv_note})')
+            return source, channel, invert
         print('no signal')
 
     print('Auto-discovery: no PPM source found')
-    return None, None
+    return None, None, False
 
 
 # MARK: - Display helpers
@@ -959,6 +969,7 @@ def main():
 
     mixer_was_modified = False
     audio_channel      = 0    # 0 = left, 1 = right
+    audio_invert       = False
     audio_capture_proc = None
     audio_file         = None
 
@@ -966,13 +977,16 @@ def main():
         if not os.path.exists(args.file):
             sys.exit(f'error: file not found: {args.file}')
         print(f'Probing {args.file} for PPM signal … ', end='', flush=True)
-        audio_channel = probe_file_for_ppm(args.file, args.rate, args.threshold)
-        if audio_channel is None:
+        result = probe_file_for_ppm(args.file, args.rate, args.threshold)
+        if result is None:
             sys.exit(
                 'no PPM signal found\n'
                 '       check --rate matches the recording (see: record_ppm.py --help)'
             )
-        print(f'found ({"left" if audio_channel == 0 else "right"} channel)')
+        audio_channel, audio_invert = result
+        ch_name  = 'left' if audio_channel == 0 else 'right'
+        inv_note = ', inverted' if audio_invert else ''
+        print(f'found ({ch_name} channel{inv_note})')
         audio_source_label = args.file
     else:
         if not args.no_mixer:
@@ -981,7 +995,7 @@ def main():
             mixer_was_modified = True
 
         if args.device is None:
-            args.device, audio_channel = discover_ppm_source(args.rate, args.threshold)
+            args.device, audio_channel, audio_invert = discover_ppm_source(args.rate, args.threshold)
             if args.device is None:
                 sys.exit(
                     'error: no PPM source detected automatically\n'
@@ -1032,8 +1046,9 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
 
     channel_name = 'left' if audio_channel == 0 else 'right'
+    inv_note     = ', inverted' if audio_invert else ''
     ui.log(f'{"File" if args.file else "Capturing from"}: {audio_source_label}  '
-           f'({args.rate} Hz, {channel_name} channel)')
+           f'({args.rate} Hz, {channel_name} channel{inv_note})')
 
     if args.file:
         audio_file   = open(args.file, 'rb')
@@ -1078,7 +1093,9 @@ def main():
 
             channel_byte_offset = audio_channel * 2
             for byte_offset in range(0, len(raw_audio) - 3, 4):
-                sample          = struct.unpack_from('<h', raw_audio, byte_offset + channel_byte_offset)[0]
+                sample = struct.unpack_from('<h', raw_audio, byte_offset + channel_byte_offset)[0]
+                if audio_invert:
+                    sample = -sample
                 completed_frame = ppm_decoder.feed(sample)
 
                 if args.oscilloscope:
