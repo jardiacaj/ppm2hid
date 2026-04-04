@@ -646,6 +646,103 @@ def start_audio_capture(pipewire_source_name, sample_rate=AUDIO_SAMPLE_RATE):
     )
 
 
+# MARK: - PPM source auto-discovery
+
+def list_pipewire_sources():
+    """Return non-monitor PipeWire/PulseAudio source names via pactl."""
+    try:
+        result = subprocess.run(
+            ['pactl', 'list', 'sources', 'short'],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+    sources = []
+    for line in result.stdout.splitlines():
+        parts = line.split('\t')
+        if len(parts) >= 2:
+            name = parts[1]
+            if not name.endswith('.monitor'):
+                sources.append(name)
+    return sources
+
+
+def probe_source_for_ppm(source_name, sample_rate=AUDIO_SAMPLE_RATE,
+                          threshold=AUDIO_THRESHOLD, duration_s=0.5):
+    """
+    Capture a short burst from *source_name* and return the channel index
+    (0 = left, 1 = right) where a valid PPM frame is detected, or None if no
+    PPM signal is found on either channel.
+    """
+    # Bytes to read: duration × sample_rate × 2 channels × 2 bytes/sample
+    probe_bytes = int(duration_s * sample_rate * 4)
+    probe_bytes = (probe_bytes + 3) & ~3   # align to stereo frame boundary
+
+    try:
+        proc = subprocess.Popen(
+            [
+                'parecord',
+                f'--device={source_name}',
+                '--format=s16le',
+                f'--rate={sample_rate}',
+                '--channels=2',
+                '--raw',
+                '--latency-msec=50',
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return None
+
+    try:
+        raw_audio = proc.stdout.read(probe_bytes)
+    except Exception:
+        raw_audio = b''
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    if len(raw_audio) < 8:
+        return None
+
+    # s16le stereo layout: [L0 L1 R0 R1] per frame; channel byte offsets are 0 and 2.
+    for channel_index, channel_byte_offset in enumerate((0, 2)):
+        decoder = PpmDecoder(sample_rate=sample_rate, threshold=threshold)
+        for byte_offset in range(0, len(raw_audio) - 3, 4):
+            sample = struct.unpack_from('<h', raw_audio, byte_offset + channel_byte_offset)[0]
+            if decoder.feed(sample) is not None:
+                return channel_index
+    return None
+
+
+def discover_ppm_source(sample_rate=AUDIO_SAMPLE_RATE, threshold=AUDIO_THRESHOLD):
+    """
+    Enumerate PipeWire/PulseAudio sources and return ``(source_name, channel)``
+    for the first source that carries a valid PPM signal (channel 0 = left,
+    1 = right), or ``(None, None)`` if none is found.
+    """
+    sources = list_pipewire_sources()
+    if not sources:
+        print('Auto-discovery: no PipeWire/PulseAudio sources found')
+        return None, None
+
+    print(f'Auto-discovery: probing {len(sources)} source(s) for PPM signal …')
+    for source in sources:
+        print(f'  {source} … ', end='', flush=True)
+        channel = probe_source_for_ppm(source, sample_rate=sample_rate, threshold=threshold)
+        if channel is not None:
+            print(f'PPM detected ({"left" if channel == 0 else "right"} channel)')
+            return source, channel
+        print('no signal')
+
+    print('Auto-discovery: no PPM source found')
+    return None, None
+
+
 # MARK: - Display helpers
 
 def _axis_bar(value_us, width=6):
@@ -717,8 +814,6 @@ def _build_monitor_line(ppm_frame, state=None, hz=0.0):
 
 # MARK: - Entry point
 
-DEFAULT_PIPEWIRE_SOURCE = 'alsa_input.pci-0000_00_1f.3.analog-stereo'
-
 # The decoder buffers up to this many channels per frame.  Higher than
 # len(CHANNEL_MAP) so that extra channels from the transmitter (e.g. ch9/ch10)
 # appear in --debug / --monitor output even if not yet mapped to joystick events.
@@ -737,8 +832,8 @@ def main():
         description='PPM RC transmitter audio input → Linux virtual joystick'
     )
     argument_parser.add_argument(
-        '-d', '--device', default=DEFAULT_PIPEWIRE_SOURCE,
-        help='PipeWire/PulseAudio source device name',
+        '-d', '--device', default=None,
+        help='PipeWire/PulseAudio source device name (default: auto-detect)',
     )
     argument_parser.add_argument(
         '-m', '--monitor', action='store_true',
@@ -772,6 +867,15 @@ def main():
     if not args.no_mixer:
         print('Switching ALSA Input Source → Line In …')
         switch_alsa_input_to_line_in()
+
+    audio_channel = 0   # 0 = left, 1 = right
+    if args.device is None:
+        args.device, audio_channel = discover_ppm_source(args.rate, args.threshold)
+        if args.device is None:
+            sys.exit(
+                'error: no PPM source detected automatically\n'
+                '       specify one with --device (see: pactl list sources short)'
+            )
 
     print('Creating virtual joystick … ', end='', flush=True)
     try:
@@ -807,7 +911,8 @@ def main():
     signal.signal(signal.SIGINT,  shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    ui.log(f'Capturing from: {args.device}  ({args.rate} Hz)')
+    channel_name = 'left' if audio_channel == 0 else 'right'
+    ui.log(f'Capturing from: {args.device}  ({args.rate} Hz, {channel_name} channel)')
     audio_capture_proc = start_audio_capture(args.device, args.rate)
 
     ppm_decoder    = PpmDecoder(max_channels=PPM_DECODE_MAX_CHANNELS, debug=args.debug,
@@ -832,9 +937,10 @@ def main():
                 ui.log('Audio capture ended unexpectedly')
                 break
 
+            channel_byte_offset = audio_channel * 2
             for byte_offset in range(0, len(raw_audio) - 3, 4):
-                left_sample     = struct.unpack_from('<h', raw_audio, byte_offset)[0]
-                completed_frame = ppm_decoder.feed(left_sample)
+                sample          = struct.unpack_from('<h', raw_audio, byte_offset + channel_byte_offset)[0]
+                completed_frame = ppm_decoder.feed(sample)
 
                 if completed_frame is None:
                     continue

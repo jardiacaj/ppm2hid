@@ -62,11 +62,11 @@ An interactive mode that helps a user build a profile for their transmitter:
    multi-position) from the observed value range.
 4. Write a profile file ready for use.
 
-## Auto-discovery of PPM audio source
+## ~~Auto-discovery of PPM audio source~~ ✓ done
 
-Enumerate PipeWire/PulseAudio sources, capture a short burst from each, and
+~~Enumerate PipeWire/PulseAudio sources, capture a short burst from each, and
 identify which one contains a valid PPM signal (sync pulse + regular channel
-cadence) — similar to what was done manually during development.
+cadence) — similar to what was done manually during development.~~
 
 ## Broader configurability
 
