@@ -270,78 +270,87 @@ class TestButtonHysteresis(unittest.TestCase):
 class TestSliderThreePos(unittest.TestCase):
     """
     ch7 (index 6) is a three-position slider encoded as two buttons:
-      mid  position (PPM ~1500 µs) → neither pressed
-      lo   position (PPM ~1100 µs) → BTN_SL_LO pressed
-      hi   position (PPM ~1900 µs) → BTN_SL_LO + BTN_SL_HI pressed
+      low  position (PPM ~1100 µs) → neither pressed
+      mid  position (PPM ~1500 µs) → BTN_SL_LO pressed
+      high position (PPM ~1900 µs) → BTN_SL_LO + BTN_SL_HI pressed
 
-    BTN_SL_LO fires when raw_us is outside the mid zone (lo OR hi):
-      enter lo zone (from mid, released): raw_us < SLIDER_LOW_THRESHOLD  − HYSTERESIS = 1279
-      leave  lo zone (to mid, pressed):   raw_us >= SLIDER_LOW_THRESHOLD + HYSTERESIS = 1321
-      (also pressed by hi zone — follows BTN_SL_HI hysteresis from that side)
+    BTN_SL_LO: pressed when raw_us > SLIDER_LOW_THRESHOLD (mid and high positions)
+      press threshold (released):  raw_us > SLIDER_LOW_THRESHOLD  + HYSTERESIS = 1321
+      release threshold (pressed): raw_us <= SLIDER_LOW_THRESHOLD − HYSTERESIS = 1279
 
-    BTN_SL_HI thresholds:
-      press:   raw_us > SLIDER_HIGH_THRESHOLD + HYSTERESIS = 1721
-      release: raw_us <= SLIDER_HIGH_THRESHOLD − HYSTERESIS = 1679
+    BTN_SL_HI: pressed when raw_us > SLIDER_HIGH_THRESHOLD (high position only)
+      press threshold (released):  raw_us > SLIDER_HIGH_THRESHOLD + HYSTERESIS = 1721
+      release threshold (pressed): raw_us <= SLIDER_HIGH_THRESHOLD − HYSTERESIS = 1679
     """
 
-    SL_LO_ENTER_US  = SLIDER_LOW_THRESHOLD  - BUTTON_HYSTERESIS_US   # 1279
-    SL_LO_LEAVE_US  = SLIDER_LOW_THRESHOLD  + BUTTON_HYSTERESIS_US   # 1321
-    SL_HI_ENTER_US  = SLIDER_HIGH_THRESHOLD + BUTTON_HYSTERESIS_US   # 1721
-    SL_HI_LEAVE_US  = SLIDER_HIGH_THRESHOLD - BUTTON_HYSTERESIS_US   # 1679
+    SL_LO_PRESS_US   = SLIDER_LOW_THRESHOLD  + BUTTON_HYSTERESIS_US   # 1321
+    SL_LO_RELEASE_US = SLIDER_LOW_THRESHOLD  - BUTTON_HYSTERESIS_US   # 1279
+    SL_HI_PRESS_US   = SLIDER_HIGH_THRESHOLD + BUTTON_HYSTERESIS_US   # 1721
+    SL_HI_RELEASE_US = SLIDER_HIGH_THRESHOLD - BUTTON_HYSTERESIS_US   # 1679
 
     def _ch7_frame(self, raw_us):
         frame = [AXIS_CENTER_US] * len(CHANNEL_MAP)
         frame[6] = raw_us
         return frame
 
-    def test_mid_position_presses_neither(self):
-        """PPM ~1500 µs (physical mid/rest) → no buttons pressed."""
+    def test_low_position_presses_neither(self):
+        """PPM ~1100 µs → no buttons pressed."""
         sink  = _WriteSink()
         state = ChannelOutputState()
-        _emit(sink, state, self._ch7_frame(AXIS_CENTER_US))
+        _emit(sink, state, self._ch7_frame(1100))
         key_events = [e for e in sink.events() if e[0] == EV_KEY]
-        self.assertEqual(key_events, [], "Mid position must not press any button")
+        self.assertEqual(key_events, [])
 
-    def test_lo_zone_presses_btnsllo_only(self):
-        """PPM ~1100 µs (physical lo) → BTN_SL_LO pressed, BTN_SL_HI not."""
+    def test_low_threshold_not_crossed(self):
+        """raw_us = 1321 exactly: need > 1321 to press BTN_SL_LO."""
         sink  = _WriteSink()
         state = ChannelOutputState()
-        transitions = _emit(sink, state, self._ch7_frame(1100))
+        _emit(sink, state, self._ch7_frame(self.SL_LO_PRESS_US))
+        key_events = [e for e in sink.events() if e[0] == EV_KEY]
+        self.assertEqual(key_events, [])
+
+    def test_mid_position_presses_btnsllo_only(self):
+        """PPM ~1500 µs → BTN_SL_LO pressed, BTN_SL_HI not."""
+        sink  = _WriteSink()
+        state = ChannelOutputState()
+        transitions = _emit(sink, state, self._ch7_frame(AXIS_CENTER_US))
         self.assertIn((EV_KEY, BTN_SL_LO, 1), sink.events())
         self.assertNotIn((EV_KEY, BTN_SL_HI, 1), sink.events())
         self.assertIn(('ch7', True), transitions)
 
-    def test_lo_zone_threshold(self):
-        """raw_us = 1279 exactly: need < 1279 to enter lo zone (released state)."""
+    def test_mid_to_low_releases_btnsllo(self):
         sink  = _WriteSink()
         state = ChannelOutputState()
-        _emit(sink, state, self._ch7_frame(self.SL_LO_ENTER_US))
-        key_events = [e for e in sink.events() if e[0] == EV_KEY]
-        self.assertEqual(key_events, [], f"value={self.SL_LO_ENTER_US} should NOT press")
-
-    def test_lo_zone_to_mid_releases_btnsllo(self):
-        sink  = _WriteSink()
-        state = ChannelOutputState()
-        _emit(sink, state, self._ch7_frame(1100))               # enter lo zone
+        _emit(sink, state, self._ch7_frame(AXIS_CENTER_US))            # enter mid
         sink.reset()
-        _emit(sink, state, self._ch7_frame(self.SL_LO_LEAVE_US))  # leave to mid
+        _emit(sink, state, self._ch7_frame(self.SL_LO_RELEASE_US))     # return to low
         self.assertIn((EV_KEY, BTN_SL_LO, 0), sink.events())
 
-    def test_hi_zone_presses_both(self):
-        """PPM ~1900 µs (physical hi) → both BTN_SL_LO and BTN_SL_HI pressed."""
+    def test_high_position_presses_both(self):
+        """PPM ~1900 µs → BTN_SL_LO + BTN_SL_HI pressed."""
         sink  = _WriteSink()
         state = ChannelOutputState()
         _emit(sink, state, self._ch7_frame(1900))
         self.assertIn((EV_KEY, BTN_SL_LO, 1), sink.events())
         self.assertIn((EV_KEY, BTN_SL_HI, 1), sink.events())
 
-    def test_hi_to_mid_releases_both(self):
-        """Returning from hi to mid releases both BTN_SL_HI and BTN_SL_LO together."""
+    def test_high_to_mid_releases_btnsllhi_only(self):
+        """Dropping from high to mid releases BTN_SL_HI, BTN_SL_LO stays pressed."""
         sink  = _WriteSink()
         state = ChannelOutputState()
-        _emit(sink, state, self._ch7_frame(1900))                  # enter hi zone
+        _emit(sink, state, self._ch7_frame(1900))                      # enter high
         sink.reset()
-        _emit(sink, state, self._ch7_frame(self.SL_HI_LEAVE_US))   # return to mid
+        _emit(sink, state, self._ch7_frame(self.SL_HI_RELEASE_US))     # drop to mid
+        self.assertIn((EV_KEY, BTN_SL_HI, 0), sink.events())
+        self.assertNotIn((EV_KEY, BTN_SL_LO, 0), sink.events())
+        self.assertTrue(state.button_states[BTN_SL_LO])
+
+    def test_high_to_low_releases_both(self):
+        sink  = _WriteSink()
+        state = ChannelOutputState()
+        _emit(sink, state, self._ch7_frame(1900))                      # enter high
+        sink.reset()
+        _emit(sink, state, self._ch7_frame(self.SL_LO_RELEASE_US))     # go to low
         self.assertIn((EV_KEY, BTN_SL_HI, 0), sink.events())
         self.assertIn((EV_KEY, BTN_SL_LO, 0), sink.events())
 

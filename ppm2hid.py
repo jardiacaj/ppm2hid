@@ -149,9 +149,9 @@ CHANNEL_MAP = [
     ('axis',   ABS_RY),
 
     # ch7 – three-position slider:
-    #   mid  position (PPM ~1500 µs) → neither pressed
-    #   lo   position (PPM ~1100 µs) → BTN_SL_LO pressed
-    #   hi   position (PPM ~1900 µs) → BTN_SL_LO + BTN_SL_HI pressed
+    #   low  position (PPM ~1100 µs) → neither pressed
+    #   mid  position (PPM ~1500 µs) → BTN_SL_LO pressed
+    #   high position (PPM ~1900 µs) → BTN_SL_LO + BTN_SL_HI pressed
     ('three_pos', BTN_SL_LO, BTN_SL_HI),
 
     # ch8 – momentary switch → button
@@ -543,9 +543,9 @@ def emit_channel_events(fd, state, ppm_frame):
             # Hysteresis applied to each slider threshold independently.
             lo_hys = BUTTON_HYSTERESIS_US if state.button_states[low_btn_code]  else -BUTTON_HYSTERESIS_US
             hi_hys = BUTTON_HYSTERESIS_US if state.button_states[high_btn_code] else -BUTTON_HYSTERESIS_US
-            # mid (neutral) → neither; lo zone → BTN_SL_LO; hi zone → BTN_SL_LO + BTN_SL_HI
+            # low (~1100 µs) → 0 buttons; mid (~1500) → BTN_SL_LO; high (~1900) → both
+            low_pressed  = raw_us > SLIDER_LOW_THRESHOLD  - lo_hys
             high_pressed = raw_us > SLIDER_HIGH_THRESHOLD - hi_hys
-            low_pressed  = (raw_us < SLIDER_LOW_THRESHOLD + lo_hys) or high_pressed
             for btn_code, pressed in ((low_btn_code, low_pressed),
                                       (high_btn_code, high_pressed)):
                 if pressed != state.button_states[btn_code]:
@@ -696,20 +696,20 @@ def _build_monitor_line(ppm_frame, state=None, hz=0.0):
         elif channel_type == 'three_pos':
             lo, hi = channel_def[1], channel_def[2]
             if state is not None:
-                if state.button_states[lo]:
-                    pos = 'LO '
-                elif state.button_states[hi]:
+                if state.button_states[hi]:    # both pressed → physical high
                     pos = 'HI '
-                else:
+                elif state.button_states[lo]:  # only lo pressed → physical mid
                     pos = 'MID'
+                else:                          # neither → physical low/rest
+                    pos = 'LOW'
             else:
-                if raw_us < SLIDER_LOW_THRESHOLD:
-                    pos = 'LO '
-                elif raw_us > SLIDER_HIGH_THRESHOLD:
+                if raw_us > SLIDER_HIGH_THRESHOLD:
                     pos = 'HI '
-                else:
+                elif raw_us > SLIDER_LOW_THRESHOLD:
                     pos = 'MID'
-            parts.append(f'{label}:{pos}')
+                else:
+                    pos = 'LOW'
+            parts.append(f'{label}:{pos}({raw_us})')
 
     hz_tag = f'  [{hz:.0f}Hz]' if hz > 0 else ''
     return ' '.join(parts) + hz_tag
