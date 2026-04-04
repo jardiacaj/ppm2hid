@@ -13,9 +13,9 @@ passes 9/9 test checks, but two channels were not exercised:
   skipped in the test until a new recording covers them.
 - **ch8 button** — never pressed (stuck at 1100 µs); press/release skipped in the test.
 
-## Add audio input visualization
+## ~~Add audio input visualization~~ ✓ done
 
-Render an oscilloscope-like graph of the unprocessed audio signal pertaining to each frame so manual analysis can be made.
+~~Render an oscilloscope-like graph of the unprocessed audio signal pertaining to each frame so manual analysis can be made.~~
 
 ## Profile configuration files
 

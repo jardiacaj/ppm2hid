@@ -719,6 +719,31 @@ def probe_source_for_ppm(source_name, sample_rate=AUDIO_SAMPLE_RATE,
     return None
 
 
+def probe_file_for_ppm(file_path, sample_rate=AUDIO_SAMPLE_RATE,
+                        threshold=AUDIO_THRESHOLD, duration_s=0.5):
+    """
+    Read the first *duration_s* seconds of a raw s16le stereo file and return
+    the channel index (0 = left, 1 = right) where a valid PPM frame is detected,
+    or None if no PPM signal is found on either channel.
+    """
+    probe_bytes = int(duration_s * sample_rate * 4)
+    probe_bytes = (probe_bytes + 3) & ~3
+    try:
+        with open(file_path, 'rb') as f:
+            raw_audio = f.read(probe_bytes)
+    except OSError:
+        return None
+    if len(raw_audio) < 8:
+        return None
+    for channel_index, channel_byte_offset in enumerate((0, 2)):
+        decoder = PpmDecoder(sample_rate=sample_rate, threshold=threshold)
+        for byte_offset in range(0, len(raw_audio) - 3, 4):
+            sample = struct.unpack_from('<h', raw_audio, byte_offset + channel_byte_offset)[0]
+            if decoder.feed(sample) is not None:
+                return channel_index
+    return None
+
+
 def discover_ppm_source(sample_rate=AUDIO_SAMPLE_RATE, threshold=AUDIO_THRESHOLD):
     """
     Enumerate PipeWire/PulseAudio sources and return ``(source_name, channel)``
@@ -812,6 +837,52 @@ def _build_monitor_line(ppm_frame, state=None, hz=0.0):
     return ' '.join(parts) + hz_tag
 
 
+def _render_oscilloscope(samples, threshold=AUDIO_THRESHOLD, width=72, height=7):
+    """
+    Render *samples* as a fixed-size ASCII oscilloscope waveform.
+
+    Returns a list of *height* strings.  Each character column covers a bucket
+    of samples; the character for each (column, row) pair is:
+      '█' – signal amplitude spans this row in this bucket (min-max fill)
+      '·' – signal is absent and this row is the threshold level
+      ' ' – signal is absent
+    """
+    if not samples:
+        return [' (no samples)'] + [' ' * width] * (height - 1)
+
+    n     = len(samples)
+    b_min = []   # per-column minimum amplitude
+    b_max = []   # per-column maximum amplitude
+    for col in range(width):
+        start  = col * n // width
+        end    = max(start + 1, (col + 1) * n // width)
+        bucket = samples[start:end]
+        b_min.append(min(bucket))
+        b_max.append(max(bucket))
+
+    # Map int16 amplitude to row index: row 0 = top (+32767), row h-1 = bottom (-32768)
+    def amp_to_row(amp):
+        frac = (amp + 32768) / 65535          # 0.0 … 1.0
+        return int((1.0 - frac) * (height - 1) + 0.5)
+
+    thr_row = amp_to_row(threshold)
+
+    rows = []
+    for row in range(height):
+        chars = []
+        for col in range(width):
+            top = amp_to_row(b_max[col])   # high amplitude → low row index
+            bot = amp_to_row(b_min[col])   # low  amplitude → high row index
+            if top <= row <= bot:
+                chars.append('█')
+            elif row == thr_row:
+                chars.append('·')
+            else:
+                chars.append(' ')
+        rows.append(''.join(chars))
+    return rows
+
+
 # MARK: - Entry point
 
 # The decoder buffers up to this many channels per frame.  Higher than
@@ -826,14 +897,21 @@ CHANNEL_LOCK_FRAMES = 5
 # Wall-clock gap between decoded frames above this threshold triggers a log warning.
 SIGNAL_GAP_THRESHOLD_S = 0.2
 
+OSCILLOSCOPE_HEIGHT = 7   # rows used by the --oscilloscope waveform display
+
 
 def main():
     argument_parser = argparse.ArgumentParser(
         description='PPM RC transmitter audio input → Linux virtual joystick'
     )
-    argument_parser.add_argument(
+    source_group = argument_parser.add_mutually_exclusive_group()
+    source_group.add_argument(
         '-d', '--device', default=None,
         help='PipeWire/PulseAudio source device name (default: auto-detect)',
+    )
+    source_group.add_argument(
+        '-f', '--file', default=None, metavar='PATH',
+        help='Read from a raw s16le stereo recording instead of a live audio source',
     )
     argument_parser.add_argument(
         '-m', '--monitor', action='store_true',
@@ -842,6 +920,20 @@ def main():
     argument_parser.add_argument(
         '--no-mixer', action='store_true',
         help="Don't modify the ALSA Input Source mixer control",
+    )
+    argument_parser.add_argument(
+        '--no-joystick', action='store_true',
+        help='Decode and display PPM frames without creating a virtual joystick '
+             '(useful for testing without /dev/uinput access)',
+    )
+    argument_parser.add_argument(
+        '--oscilloscope', action='store_true',
+        help='Show an ASCII waveform of the raw audio for each decoded frame',
+    )
+    argument_parser.add_argument(
+        '--no-realtime', action='store_true',
+        help='With --file: consume the recording as fast as possible instead of '
+             'at the original sample rate (default: real-time playback)',
     )
     argument_parser.add_argument(
         '--debug', action='store_true',
@@ -861,28 +953,53 @@ def main():
     )
     args = argument_parser.parse_args()
 
-    if not os.path.exists('/dev/uinput'):
-        sys.exit('error: /dev/uinput not found – is the uinput kernel module loaded?')
+    if not args.no_joystick and not os.path.exists('/dev/uinput'):
+        sys.exit('error: /dev/uinput not found – is the uinput kernel module loaded?\n'
+                 '       use --no-joystick to run without creating a virtual device')
 
-    if not args.no_mixer:
-        print('Switching ALSA Input Source → Line In …')
-        switch_alsa_input_to_line_in()
+    mixer_was_modified = False
+    audio_channel      = 0    # 0 = left, 1 = right
+    audio_capture_proc = None
+    audio_file         = None
 
-    audio_channel = 0   # 0 = left, 1 = right
-    if args.device is None:
-        args.device, audio_channel = discover_ppm_source(args.rate, args.threshold)
-        if args.device is None:
+    if args.file:
+        if not os.path.exists(args.file):
+            sys.exit(f'error: file not found: {args.file}')
+        print(f'Probing {args.file} for PPM signal … ', end='', flush=True)
+        audio_channel = probe_file_for_ppm(args.file, args.rate, args.threshold)
+        if audio_channel is None:
             sys.exit(
-                'error: no PPM source detected automatically\n'
-                '       specify one with --device (see: pactl list sources short)'
+                'no PPM signal found\n'
+                '       check --rate matches the recording (see: record_ppm.py --help)'
             )
+        print(f'found ({"left" if audio_channel == 0 else "right"} channel)')
+        audio_source_label = args.file
+    else:
+        if not args.no_mixer:
+            print('Switching ALSA Input Source → Line In …')
+            switch_alsa_input_to_line_in()
+            mixer_was_modified = True
 
-    print('Creating virtual joystick … ', end='', flush=True)
-    try:
-        uinput_fd = open_uinput_joystick()
-    except PermissionError:
-        sys.exit('error: cannot open /dev/uinput – check ACL or group membership')
-    print('ok')
+        if args.device is None:
+            args.device, audio_channel = discover_ppm_source(args.rate, args.threshold)
+            if args.device is None:
+                sys.exit(
+                    'error: no PPM source detected automatically\n'
+                    '       specify one with --device (see: pactl list sources short)'
+                )
+        audio_source_label = args.device
+
+    uinput_fd = None
+    if args.no_joystick:
+        print('Virtual joystick: disabled (--no-joystick)')
+    else:
+        print('Creating virtual joystick … ', end='', flush=True)
+        try:
+            uinput_fd = open_uinput_joystick()
+        except PermissionError:
+            sys.exit('error: cannot open /dev/uinput – check ACL or group membership\n'
+                     '       use --no-joystick to run without creating a virtual device')
+        print('ok')
 
     # Calculate how many rows the fixed status area needs
     fixed_rows = 0
@@ -890,20 +1007,23 @@ def main():
         fixed_rows += 1
     if args.debug:
         fixed_rows += PPM_DECODE_MAX_CHANNELS + 2
+    if args.oscilloscope:
+        fixed_rows += OSCILLOSCOPE_HEIGHT
 
     ui = TerminalUI()
     if fixed_rows:
         ui.start(fixed_rows)
-
-    audio_capture_proc = None
 
     def shutdown(signum=None, frame=None):
         ui.stop()
         print('\nShutting down …')
         if audio_capture_proc:
             audio_capture_proc.terminate()
-        destroy_uinput_joystick(uinput_fd)
-        if not args.no_mixer:
+        if audio_file:
+            audio_file.close()
+        if uinput_fd is not None:
+            destroy_uinput_joystick(uinput_fd)
+        if mixer_was_modified:
             print('Restoring ALSA Input Source …')
             restore_alsa_input_sources()
         sys.exit(0)
@@ -912,8 +1032,15 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
 
     channel_name = 'left' if audio_channel == 0 else 'right'
-    ui.log(f'Capturing from: {args.device}  ({args.rate} Hz, {channel_name} channel)')
-    audio_capture_proc = start_audio_capture(args.device, args.rate)
+    ui.log(f'{"File" if args.file else "Capturing from"}: {audio_source_label}  '
+           f'({args.rate} Hz, {channel_name} channel)')
+
+    if args.file:
+        audio_file   = open(args.file, 'rb')
+        audio_source = audio_file
+    else:
+        audio_capture_proc = start_audio_capture(args.device, args.rate)
+        audio_source       = audio_capture_proc.stdout
 
     ppm_decoder    = PpmDecoder(max_channels=PPM_DECODE_MAX_CHANNELS, debug=args.debug,
                                sample_rate=args.rate, threshold=args.threshold)
@@ -925,16 +1052,28 @@ def main():
     expected_ch_count  = None
     candidate_ch_count = None
     stable_count       = 0
+    # Oscilloscope buffering (only when --oscilloscope is active)
+    osc_buffer       = []   # accumulates samples for the current frame
+    osc_frame_samples = []  # samples from the last completed frame
+
+    real_time_file = args.file and not args.no_realtime
 
     ui.log('Waiting for PPM signal … (Ctrl-C to quit)')
+    if real_time_file:
+        ui.log('Real-time playback enabled (--no-realtime to disable)')
 
-    AUDIO_CHUNK_BYTES = 1024 * 4   # 1024 stereo frames × 4 bytes each
+    AUDIO_CHUNK_BYTES  = 1024 * 4   # 1024 stereo frames × 4 bytes each
+    chunk_duration_s   = AUDIO_CHUNK_BYTES / 4 / args.rate
+    next_chunk_deadline = time.monotonic()
 
     try:
         while True:
-            raw_audio = audio_capture_proc.stdout.read(AUDIO_CHUNK_BYTES)
+            raw_audio = audio_source.read(AUDIO_CHUNK_BYTES)
             if not raw_audio:
-                ui.log('Audio capture ended unexpectedly')
+                if args.file:
+                    ui.log('End of recording.')
+                else:
+                    ui.log('Audio capture ended unexpectedly')
                 break
 
             channel_byte_offset = audio_channel * 2
@@ -942,15 +1081,22 @@ def main():
                 sample          = struct.unpack_from('<h', raw_audio, byte_offset + channel_byte_offset)[0]
                 completed_frame = ppm_decoder.feed(sample)
 
+                if args.oscilloscope:
+                    osc_buffer.append(sample)
+
                 if completed_frame is None:
                     continue
+
+                if args.oscilloscope:
+                    osc_frame_samples = osc_buffer[:]
+                    osc_buffer.clear()
 
                 # ── Signal gap detection ──────────────────────────────────────
                 now   = time.monotonic()
                 gap_s = (now - last_frame_time) if last_frame_time is not None else 0.0
                 last_frame_time = now
 
-                if gap_s > SIGNAL_GAP_THRESHOLD_S:
+                if gap_s > SIGNAL_GAP_THRESHOLD_S and not real_time_file:
                     ui.log(f'*** SIGNAL GAP {gap_s:.1f}s ***')
                     in_signal_gap = True
                 elif in_signal_gap:
@@ -981,10 +1127,11 @@ def main():
                 if frames_decoded == 1:
                     ui.log(f'PPM signal detected — {ch_count} channels')
 
-                btn_transitions = emit_channel_events(uinput_fd, output_state, completed_frame)
-                if btn_transitions:
-                    for ch_label, pressed in btn_transitions:
-                        ui.log(f'BTN {ch_label}: {"PRESS  ▶" if pressed else "release ◀"}')
+                if uinput_fd is not None:
+                    btn_transitions = emit_channel_events(uinput_fd, output_state, completed_frame)
+                    if btn_transitions:
+                        for ch_label, pressed in btn_transitions:
+                            ui.log(f'BTN {ch_label}: {"PRESS  ▶" if pressed else "release ◀"}')
 
                 # ── Display update ────────────────────────────────────────────
                 if ui.active:
@@ -996,6 +1143,11 @@ def main():
                         )
                     if args.debug:
                         status.extend(ppm_decoder.last_debug_lines)
+                    if args.oscilloscope and osc_frame_samples:
+                        osc_width = min(72, shutil.get_terminal_size(fallback=(80, 24)).columns - 4)
+                        status.extend(_render_oscilloscope(
+                            osc_frame_samples, args.threshold, osc_width, OSCILLOSCOPE_HEIGHT
+                        ))
                     ui.update_status(status)
                 else:
                     if args.monitor:
@@ -1005,6 +1157,13 @@ def main():
                         sys.stdout.flush()
                     if args.debug and ppm_decoder.last_debug_lines:
                         ui.render_debug_stderr(ppm_decoder.last_debug_lines)
+
+            # ── Real-time throttle (file mode only) ───────────────────────────
+            if real_time_file:
+                next_chunk_deadline += chunk_duration_s
+                sleep_s = next_chunk_deadline - time.monotonic()
+                if sleep_s > 0:
+                    time.sleep(sleep_s)
 
     except KeyboardInterrupt:
         pass
