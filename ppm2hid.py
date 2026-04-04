@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ppm2joy – RC transmitter PPM audio input → Linux virtual joystick
+ppm2hid – RC transmitter PPM audio input → Linux virtual joystick
 
 Captures the PPM signal from the Line In jack (ALC1150, card 0) via
 PipeWire/PulseAudio and exposes a /dev/input/js* virtual joystick using
@@ -12,21 +12,20 @@ PPM signal format (this transmitter – positive/high-active):
   SYNC pulse  = long HIGH (>3 ms), marks the end/start of each frame
 
 Channel mapping
-  ch1  → ABS_STEERING          (steering axis)
-  ch2  → ABS_GAS + ABS_BRAKE   (single stick split into gas and brake axes)
-  ch3  → BTN_TRIGGER            (button)
-  ch4  → BTN_THUMB              (button)
-  ch5  → ABS_X                  (auxiliary axis)
-  ch6  → ABS_Y                  (auxiliary axis)
-  ch7  → BTN_THUMB2 / BTN_TOP  (3-position slider mapped to two buttons)
-  ch8  → BTN_TOP2               (button)
-  ch9  → BTN_PINKIE             (button)
-  ch10 → BTN_BASE               (button)
+  ch1  → ABS_X      (steering, left/right)
+  ch2  → ABS_Y      (throttle, inverted: push forward = positive, pull back = negative)
+  ch3  → BTN_SW_CH3  (button)
+  ch4  → BTN_SW_CH4  (button)
+  ch5  → ABS_RX      (auxiliary axis)
+  ch6  → ABS_RY      (auxiliary axis)
+  ch7  → BTN_SL_LO / BTN_SL_HI  (3-position slider)
+  ch8  → BTN_SW_CH8  (button)
 """
 
 import argparse
 import fcntl
 import os
+import shutil
 import signal
 import struct
 import subprocess
@@ -34,7 +33,7 @@ import sys
 import time
 
 
-# ── Linux input subsystem constants ──────────────────────────────────────────
+# MARK: - Linux input subsystem constants
 
 # Event types
 EV_SYN = 0   # synchronisation marker
@@ -49,105 +48,99 @@ BUS_USB = 0x03   # pretend to be a USB device (required by uinput)
 # Codes with lower numbers appear first in joydev (/dev/input/js*), so the
 # primary controls (steering, throttle) are assigned the lowest codes.
 ABS_X  = 0   # ch1 – steering  (joystick axis 0)
-ABS_Y  = 1   # ch2 – throttle  (joystick axis 1, center=idle, +forward, -back)
+ABS_Y  = 1   # ch2 – throttle  (joystick axis 1)
 ABS_RX = 3   # ch5 – aux axis  (joystick axis 2)
 ABS_RY = 4   # ch6 – aux axis  (joystick axis 3)
 
-# Button codes – joystick range (0x120–0x12f); joydev driver requires at least
-# one code in this range to create /dev/input/js*
-BTN_TRIGGER = 0x120   # ch3
-BTN_THUMB   = 0x121   # ch4
-BTN_THUMB2  = 0x122   # ch7 low position
-BTN_TOP     = 0x123   # ch7 high position
-BTN_TOP2    = 0x124   # ch8
-BTN_PINKIE  = 0x125   # ch9
-BTN_BASE    = 0x126   # ch10
+# Joystick button codes (linux/input-event-codes.h, BTN_JOYSTICK range 0x120–0x12f).
+# joydev requires at least one code in this range to create /dev/input/js*.
+# The kernel assigns "flight-stick" names to the range (TRIGGER, THUMB, TOP, PINKIE…);
+# those names have no relation to this RC transmitter's buttons.
+# Code order determines /dev/input/js* button numbering: 0x120 → button 0, etc.
+BTN_SW_CH3  = 0x120   # ch3  momentary switch → joystick button 0
+BTN_SW_CH4  = 0x121   # ch4  momentary switch → joystick button 1
+BTN_SL_LO   = 0x122   # ch7  slider low  → joystick button 2
+BTN_SL_HI   = 0x123   # ch7  slider high → joystick button 3
+BTN_SW_CH8  = 0x124   # ch8  momentary switch → joystick button 4
+BTN_SW_CH9  = 0x125   # ch9  (reserved – not yet in CHANNEL_MAP)
+BTN_SW_CH10 = 0x126   # ch10 (reserved – not yet in CHANNEL_MAP)
 
-# uinput ioctl numbers – _IOW('U', nr, sizeof(int)) on x86-64
-UI_SET_EVBIT   = 0x40045564   # nr=100  enable an event type
-UI_SET_KEYBIT  = 0x40045565   # nr=101  enable a key/button code
-UI_SET_ABSBIT  = 0x40045567   # nr=103  enable an abs axis code
-UI_DEV_CREATE  = 0x5501       # _IO('U', 1)  create the device
-UI_DEV_DESTROY = 0x5502       # _IO('U', 2)  destroy the device
+# uinput ioctl numbers
+UI_SET_EVBIT   = 0x40045564
+UI_SET_KEYBIT  = 0x40045565
+UI_SET_ABSBIT  = 0x40045567
+UI_DEV_CREATE  = 0x5501
+UI_DEV_DESTROY = 0x5502
 
 UINPUT_MAX_NAME_SIZE = 80
-ABS_CNT = 64   # total number of ABS axis slots in uinput_user_dev
+ABS_CNT = 64
 
-# input_event layout on 64-bit Linux:
-#   struct timeval  (tv_sec int64 + tv_usec int64)  = 16 bytes
-#   type  uint16 + code uint16 + value int32        =  8 bytes
-INPUT_EVENT_STRUCT = 'qqHHi'   # 24 bytes total
+# input_event layout on 64-bit Linux: timeval(16) + type/code/value(8) = 24 bytes
+INPUT_EVENT_STRUCT = 'qqHHi'
 
 
-# ── PPM timing constants ──────────────────────────────────────────────────────
+# MARK: - PPM timing constants
 
-AUDIO_SAMPLE_RATE = 48_000   # Hz – negotiated with PipeWire
+AUDIO_SAMPLE_RATE = 48_000   # Hz
 
-# All pulse-length thresholds are expressed in samples at AUDIO_SAMPLE_RATE
 def _microseconds_to_samples(us):
     return us * AUDIO_SAMPLE_RATE // 1_000_000
 
-AUDIO_THRESHOLD     = 32_700   # int16 level above which the signal is HIGH
-                                # (transmitter clips the ADC near ±32767)
+AUDIO_THRESHOLD = 0   # int16 zero-crossing: PPM signal swings between +32767 and −32768
+                      # (works at all sample rates since the ADC clips both polarity)
+                      # Override with --threshold if your audio path has a DC offset.
 
-SYNC_MIN_SAMPLES = _microseconds_to_samples(3_000)    # >3 ms HIGH → sync pulse
-SYNC_MAX_SAMPLES = _microseconds_to_samples(50_000)   # sanity ceiling
+SYNC_MIN_SAMPLES    = _microseconds_to_samples(3_000)    # >3 ms → sync pulse
+SYNC_MAX_SAMPLES    = _microseconds_to_samples(50_000)
 
-# Widest window we accept as a valid channel pulse (wider than AXIS range so
-# that edge values are clamped rather than silently dropped)
-CHANNEL_MIN_SAMPLES = _microseconds_to_samples(500)    # minimum HIGH pulse to accept as a channel
-CHANNEL_MAX_SAMPLES = _microseconds_to_samples(2_100)  # maximum HIGH pulse (below sync threshold)
+CHANNEL_MIN_SAMPLES = _microseconds_to_samples(500)    # min HIGH to accept as channel
+CHANNEL_MAX_SAMPLES = _microseconds_to_samples(2_100)  # max HIGH below sync threshold
 
 
-# ── Axis / button calibration ─────────────────────────────────────────────────
+# MARK: - Axis / button calibration
 
-AXIS_MIN_US = 1_100   # µs value reported at one extreme of an axis
-AXIS_MAX_US = 1_900   # µs value reported at the other extreme
+AXIS_MIN_US    = 1_100
+AXIS_MAX_US    = 1_900
 AXIS_CENTER_US = (AXIS_MIN_US + AXIS_MAX_US) // 2   # 1500 µs
 
 # Suppress axis events smaller than this to remove quantisation noise.
-# At 48 kHz one sample ≈ 21 µs; two samples ≈ 42 µs.
-AXIS_DEADBAND_US = 42
+# ≈ 2 samples at the configured sample rate (e.g. 10 µs at 192 kHz, 42 µs at 48 kHz).
+AXIS_DEADBAND_US = max(1, 2 * 1_000_000 // AUDIO_SAMPLE_RATE)
 
-# Button threshold: channel value above this → button pressed.
-# Using the centre point so any deliberate switch position registers.
-BUTTON_THRESHOLD_US = AXIS_CENTER_US   # 1500 µs
-
-# Three-position slider zones (ch7).
-# Below LOW_THRESH  → low position  (BTN_THUMB2 pressed)
-# Above HIGH_THRESH → high position (BTN_TOP pressed)
-# Between           → centre        (neither pressed)
-SLIDER_LOW_THRESHOLD  = 1_300   # µs
-SLIDER_HIGH_THRESHOLD = 1_700   # µs
+BUTTON_THRESHOLD_US   = AXIS_CENTER_US   # value above this → pressed
+# Hysteresis applied around button/slider thresholds to prevent toggling from
+# 1-sample jitter (~21 µs at 48 kHz).  Once a button is pressed it stays pressed
+# until the value falls BELOW (threshold − hysteresis), and vice-versa.
+BUTTON_HYSTERESIS_US  = 21               # ≈ 1 sample at 48 kHz
+SLIDER_LOW_THRESHOLD  = 1_300            # ch7 low position threshold (µs)
+SLIDER_HIGH_THRESHOLD = 1_700            # ch7 high position threshold (µs)
 
 
 def samples_to_microseconds(samples):
     return samples * 1_000_000 // AUDIO_SAMPLE_RATE
 
 
-# ── Channel map ───────────────────────────────────────────────────────────────
+# MARK: - Channel map
 #
-# Each entry is a tuple whose first element is the channel type.  The
-# remaining elements depend on the type:
+# Each entry is a tuple whose first element is the channel type:
 #
-#   ('axis',         abs_code)
-#   ('gas_brake',    gas_abs_code, brake_abs_code)
-#   ('button',       btn_code)
-#   ('three_pos',    low_btn_code, high_btn_code)
+#   ('axis',      abs_code)           – proportional axis, value passed through
+#   ('axis',      abs_code, True)     – proportional axis, value inverted
+#   ('button',    btn_code)           – momentary switch → button
+#   ('three_pos', low_btn, high_btn)  – three-position slider → two buttons
 
 CHANNEL_MAP = [
     # ch1 – main steering stick (left/right) → first joystick axis
     ('axis',   ABS_X),
 
-    # ch2 – throttle/brake stick → second joystick axis.
-    #        Centre (1500 µs) = idle, forward = positive, back = negative.
-    ('axis',   ABS_Y),
+    # ch2 – throttle/brake stick, inverted so that pushing forward → positive
+    ('axis',   ABS_Y, True),
 
     # ch3 – momentary switch → button
-    ('button', BTN_TRIGGER),
+    ('button', BTN_SW_CH3),
 
     # ch4 – momentary switch → button
-    ('button', BTN_THUMB),
+    ('button', BTN_SW_CH4),
 
     # ch5 – auxiliary proportional channel
     ('axis',   ABS_RX),
@@ -156,84 +149,91 @@ CHANNEL_MAP = [
     ('axis',   ABS_RY),
 
     # ch7 – three-position slider:
-    #   low  position → BTN_THUMB2 pressed
+    #   low  position → BTN_SL_LO pressed
     #   mid  position → neither pressed
-    #   high position → BTN_TOP pressed
-    ('three_pos', BTN_THUMB2, BTN_TOP),
+    #   high position → BTN_SL_HI pressed
+    ('three_pos', BTN_SL_LO, BTN_SL_HI),
 
     # ch8 – momentary switch → button
-    ('button',    BTN_TOP2),
-    # ch9 and ch10 are not present in this transmitter's PPM signal (8-channel output)
+    ('button', BTN_SW_CH8),
 ]
 
 # Derived sets of all axis and button codes declared in the channel map
 _ALL_ABS_CODES = set()
 _ALL_BTN_CODES = set()
-for channel_def in CHANNEL_MAP:
-    channel_type = channel_def[0]
-    if channel_type == 'axis':
-        _ALL_ABS_CODES.add(channel_def[1])
-    elif channel_type == 'gas_brake':
-        _ALL_ABS_CODES.add(channel_def[1])   # gas
-        _ALL_ABS_CODES.add(channel_def[2])   # brake
-    elif channel_type == 'button':
-        _ALL_BTN_CODES.add(channel_def[1])
-    elif channel_type == 'three_pos':
-        _ALL_BTN_CODES.add(channel_def[1])   # low button
-        _ALL_BTN_CODES.add(channel_def[2])   # high button
+for _ch in CHANNEL_MAP:
+    if _ch[0] == 'axis':
+        _ALL_ABS_CODES.add(_ch[1])
+    elif _ch[0] == 'button':
+        _ALL_BTN_CODES.add(_ch[1])
+    elif _ch[0] == 'three_pos':
+        _ALL_BTN_CODES.add(_ch[1])
+        _ALL_BTN_CODES.add(_ch[2])
 
 
-# ── PPM frame decoder ─────────────────────────────────────────────────────────
+# MARK: - PPM frame decoder
 
 class PpmDecoder:
     """
     Stateful decoder that consumes raw int16 audio samples and emits
     complete PPM frames.
 
-    Call feed(sample) for every audio sample.  It returns a list of channel
-    values in microseconds when a complete frame is recognised, or None
-    while still accumulating.
+    Call feed(sample) for every audio sample.  Returns a list of channel
+    values in microseconds when a complete frame is recognised, else None.
 
-    PPM frame structure (this transmitter):
-      [SYNC HIGH ≥3 ms] [HIGH ch1] [LOW sep] [HIGH ch2] [LOW sep] … [HIGH chN] [LOW sep]
-      Channel value = HIGH_pulse_duration + LOW_separator_duration (in µs)
+    After each completed frame the following attributes are updated:
+      last_frame_hz    – frame rate computed from sample counts (stable, no jitter)
+      last_debug_lines – list of strings for the debug display (when debug=True)
     """
 
-    def __init__(self, max_channels=10, debug=False):
-        self.max_channels = max_channels
+    def __init__(self, max_channels=10, debug=False,
+                 sample_rate=AUDIO_SAMPLE_RATE, threshold=AUDIO_THRESHOLD):
+        self.max_channels    = max_channels
         self._debug          = debug
-        self._current_level  = None    # 'high' or 'low'
-        self._run_length     = 0       # consecutive samples at current level
-        self._synced         = False   # True after first sync pulse seen
-        self._pending_high   = None    # sample count of last HIGH pulse (awaiting LOW)
-        self._frame_channels = []      # channel values accumulating for this frame
-        self._frame_count    = 0       # total frames dispatched (debug labelling)
-        # Debug state – accumulated during the current frame, rendered on sync
-        self._dbg_items      = []      # list of (ch_n, h_smp, l_smp, total_us, clamped_us)
-        self._dbg_h_pending  = None    # (ch_n, h_smp) waiting for LOW
-        self._dbg_skips      = 0       # non-channel HIGH pulses skipped this frame
-        self._dbg_n_lines    = 0       # lines printed last render (for cursor-up)
-        self._dbg_last_time  = None    # wall time of last sync, for gap detection
+        self._sample_rate    = sample_rate
+        self._threshold      = threshold
+        # Timing thresholds in samples, derived from sample_rate so the decoder
+        # works correctly at 48 kHz, 96 kHz, 192 kHz, etc.
+        self._sync_min  = sample_rate * 3_000  // 1_000_000
+        self._sync_max  = sample_rate * 50_000 // 1_000_000
+        self._ch_min    = sample_rate * 500    // 1_000_000
+        self._ch_max    = sample_rate * 2_100  // 1_000_000
+        self._current_level  = None
+        self._run_length     = 0
+        self._synced         = False
+        self._pending_high   = None
+        self._frame_channels = []
+        self._frame_count    = 0
+        # Debug accumulation state
+        self._dbg_items      = []
+        self._dbg_h_pending  = None
+        self._dbg_skips      = 0
+        # Sample-count-based Hz measurement (immune to audio-chunk jitter)
+        self._sample_count     = 0
+        self._last_sync_sample = None
+        self.last_frame_hz     = 0.0
+        # Debug lines ready for the caller to display
+        self.last_debug_lines  = []
 
     def feed(self, sample):
         """
         Process one int16 audio sample.
         Returns a list of µs values when a frame completes, else None.
         """
-        new_level = 'high' if sample > AUDIO_THRESHOLD else 'low'
+        self._sample_count += 1
+        new_level = 'high' if sample > self._threshold else 'low'
 
         if new_level == self._current_level:
             self._run_length += 1
             return None
 
-        # Level transition: the pulse that just ended has length _run_length
         completed_level  = self._current_level
         completed_length = self._run_length
         self._current_level = new_level
         self._run_length    = 1
 
         if completed_level is None:
-            return None   # very first sample – no pulse to evaluate yet
+            return None
 
         return self._process_completed_pulse(completed_level, completed_length)
 
@@ -241,10 +241,16 @@ class PpmDecoder:
         """Evaluate a just-completed pulse and update decoder state."""
 
         if pulse_type == 'high':
-            if SYNC_MIN_SAMPLES <= pulse_length_samples <= SYNC_MAX_SAMPLES:
-                # Sync pulse: render debug display, then dispatch the accumulated frame
+            if self._sync_min <= pulse_length_samples <= self._sync_max:
+                # Sync pulse.  Compute Hz from samples elapsed since last sync.
+                if self._last_sync_sample is not None:
+                    elapsed = self._sample_count - self._last_sync_sample
+                    self.last_frame_hz = (self._sample_rate / elapsed
+                                         if elapsed > 0 else 0.0)
+                self._last_sync_sample = self._sample_count
+
                 if self._debug:
-                    self._debug_render(pulse_length_samples)
+                    self.last_debug_lines = self._build_debug_lines(pulse_length_samples)
                     self._dbg_items     = []
                     self._dbg_h_pending = None
                     self._dbg_skips     = 0
@@ -261,8 +267,7 @@ class PpmDecoder:
                 return completed_frame
 
             elif (self._synced
-                  and CHANNEL_MIN_SAMPLES <= pulse_length_samples <= CHANNEL_MAX_SAMPLES):
-                # Valid channel HIGH pulse – wait for the LOW separator
+                  and self._ch_min <= pulse_length_samples <= self._ch_max):
                 self._pending_high = pulse_length_samples
                 if self._debug:
                     self._dbg_h_pending = (len(self._frame_channels) + 1,
@@ -274,18 +279,16 @@ class PpmDecoder:
                     self._dbg_h_pending = None
 
         elif pulse_type == 'low':
-            # LOW separator following a HIGH channel pulse
             if self._pending_high is not None and self._synced:
                 total_samples = self._pending_high + pulse_length_samples
-                total_us      = samples_to_microseconds(total_samples)
+                total_us      = self._smp_to_us(total_samples)
 
-                if CHANNEL_MIN_SAMPLES <= total_samples <= CHANNEL_MAX_SAMPLES:
+                if self._ch_min <= total_samples <= self._ch_max:
                     clamped_us = max(AXIS_MIN_US, min(AXIS_MAX_US, total_us))
                     if self._debug and self._dbg_h_pending:
                         ch_n, h_smp = self._dbg_h_pending
                         self._dbg_items.append(
-                            (ch_n, h_smp, pulse_length_samples, total_us, clamped_us)
-                        )
+                            (ch_n, h_smp, pulse_length_samples, total_us, clamped_us))
                         self._dbg_h_pending = None
                     if len(self._frame_channels) < self.max_channels:
                         self._frame_channels.append(clamped_us)
@@ -298,42 +301,25 @@ class PpmDecoder:
 
         return None
 
-    def _debug_render(self, sync_smp):
-        """
-        Render one fixed-height block of debug info to stderr, overwriting the
-        previous block in place so the display never scrolls.
+    def _smp_to_us(self, samples):
+        return samples * 1_000_000 // self._sample_rate
 
-        Layout (max_channels + 2 lines):
-          line 0:  frame summary (number, sync pulse, channel count, decoded values,
-                   frame interval / signal-gap warning)
-          lines 1…max_channels:  one line per channel slot (decoded or blank)
-          last line:  skipped-pulse count
-        """
-        FIXED = self.max_channels + 2
-        sync_us = samples_to_microseconds(sync_smp)
+    def _build_debug_lines(self, sync_smp):
+        """Return a fixed-height list of debug strings for the current frame."""
+        FIXED   = self.max_channels + 2
+        sync_us = self._smp_to_us(sync_smp)
+        hz_str  = f'  {self.last_frame_hz:4.0f}Hz' if self.last_frame_hz > 0 else ''
+        vals    = '  '.join(str(v) for v in self._frame_channels)
 
-        # Measure wall-clock gap since last sync for signal-quality annotation
-        now = time.monotonic()
-        if self._dbg_last_time is not None:
-            gap_s = now - self._dbg_last_time
-            if gap_s > 0.2:   # >200 ms between frames = connection problem
-                timing_note = f'  *** GAP {gap_s:.2f}s ***'
-            else:
-                timing_note = f'  {1/gap_s:4.0f}Hz'
-        else:
-            timing_note = ''
-        self._dbg_last_time = now
-
-        vals = '  '.join(str(v) for v in self._frame_channels)
         lines = [
             f'frame {self._frame_count:4d}  '
             f'sync {sync_smp:4d}smp={sync_us:5d}µs  '
-            f'{len(self._frame_channels):2d}ch  [{vals}]{timing_note}'
+            f'{len(self._frame_channels):2d}ch  [{vals}]{hz_str}'
         ]
 
         for ch_n, h_smp, l_smp, total_us, clamped_us in self._dbg_items:
-            h_us = samples_to_microseconds(h_smp)
-            l_us = samples_to_microseconds(l_smp)
+            h_us  = self._smp_to_us(h_smp)
+            l_us  = self._smp_to_us(l_smp)
             clamp = f'  →clamped {clamped_us}' if clamped_us != total_us else ''
             lines.append(
                 f'  ch{ch_n:2d}  '
@@ -342,74 +328,152 @@ class PpmDecoder:
                 f'= {total_us:5d}µs{clamp}'
             )
 
-        # Pad channel section to a fixed height so every render is the same size
         while len(lines) < FIXED - 1:
             lines.append('')
 
         lines.append(f'  skipped: {self._dbg_skips}')
+        return lines
 
-        # Move cursor to start of previous render, then overwrite line by line
+
+# MARK: - Terminal split-view UI
+
+class TerminalUI:
+    """
+    Split-screen terminal layout when stdout is a TTY:
+
+      ┌─────────────────────────────────────┐  ↑ scrolling log area
+      │ 12:34:56 PPM signal detected – 8ch  │    (warnings, errors, info)
+      │ 12:34:58 *** SIGNAL GAP 2.3s ***    │
+      ├─────────────────────────────────────┤
+      │ STR:[███░░░] THR:[███░░░] …  [70Hz] │  ↓ fixed status area
+      │ frame  123  sync  196smp …          │    (monitor + debug, no scroll)
+      └─────────────────────────────────────┘
+
+    Before start() is called, log() falls back to plain print().
+    After start(), log() writes to the scrolling area and update_status()
+    overwrites the fixed rows in place.
+    """
+
+    def __init__(self):
+        self._initialized = False
+        self._height      = 0
+        self._fixed_rows  = 0
+        self._dbg_n_lines = 0   # cursor-up counter for non-TTY debug rendering
+
+    @property
+    def active(self):
+        return self._initialized
+
+    def start(self, fixed_rows):
+        """Reserve `fixed_rows` at the bottom; confine scrolling to the rest."""
+        if not sys.stdout.isatty() or fixed_rows == 0:
+            return
+        size         = shutil.get_terminal_size()
+        self._height = size.lines
+        self._fixed_rows = fixed_rows
+        log_rows     = self._height - fixed_rows
+        if log_rows < 3:
+            return   # terminal too small – degrade gracefully
+
+        self._initialized = True
+        # Confine automatic scrolling to the log area only
+        sys.stdout.write(f'\033[1;{log_rows}r')
+        # Clear the fixed status area
+        for i in range(fixed_rows):
+            sys.stdout.write(f'\033[{log_rows + 1 + i};1H\033[2K')
+        # Park cursor at the bottom of the log area ready for the first log line
+        sys.stdout.write(f'\033[{log_rows};1H')
+        sys.stdout.flush()
+
+    def log(self, msg):
+        """Write a message to the scrolling log area (or stdout if not active)."""
+        if not self._initialized:
+            print(msg, flush=True)
+            return
+        # The cursor lives in the scroll region; writing + newline may scroll it
+        sys.stdout.write(f'\r{msg}\033[K\n')
+        sys.stdout.flush()
+
+    def update_status(self, lines):
+        """Overwrite the fixed status rows at the bottom with `lines`."""
+        if not self._initialized:
+            return
+        log_rows = self._height - self._fixed_rows
+        out = ['\0337']   # DEC save cursor position
+        for i, line in enumerate(lines[:self._fixed_rows]):
+            row = log_rows + 1 + i
+            out.append(f'\033[{row};1H\r{line:<79}\033[K')
+        out.append('\0338')   # DEC restore cursor position
+        sys.stdout.write(''.join(out))
+        sys.stdout.flush()
+
+    def stop(self):
+        """Reset scroll region and move cursor below the status area."""
+        if not self._initialized:
+            return
+        sys.stdout.write(f'\033[r\033[{self._height};1H\n')
+        sys.stdout.flush()
+        self._initialized = False
+
+    def render_debug_stderr(self, lines):
+        """Non-TTY fallback: write debug lines to stderr using cursor-up overwrite."""
         if self._dbg_n_lines:
             sys.stderr.write(f'\033[{self._dbg_n_lines}F')
         for line in lines:
             sys.stderr.write(f'\r{line:<79}\033[K\n')
         sys.stderr.flush()
-        self._dbg_n_lines = FIXED
+        self._dbg_n_lines = len(lines)
 
 
-# ── uinput device management ──────────────────────────────────────────────────
+# MARK: - uinput device management
 
 def open_uinput_joystick():
     """
     Create a virtual joystick via /dev/uinput.
-
-    Registers every axis and button code declared in CHANNEL_MAP, writes
-    the uinput_user_dev configuration struct, and calls UI_DEV_CREATE.
+    Registers every axis and button code declared in CHANNEL_MAP.
     Returns the open file descriptor.
     """
     fd = os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK)
 
-    # Register all button codes (EV_KEY must be enabled before UI_SET_KEYBIT)
     fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)
     for btn_code in sorted(_ALL_BTN_CODES):
         fcntl.ioctl(fd, UI_SET_KEYBIT, btn_code)
 
-    # Register all axis codes (EV_ABS must be enabled before UI_SET_ABSBIT)
     fcntl.ioctl(fd, UI_SET_EVBIT, EV_ABS)
     for abs_code in sorted(_ALL_ABS_CODES):
         fcntl.ioctl(fd, UI_SET_ABSBIT, abs_code)
 
-    # Build the uinput_user_dev configuration arrays.
-    # Each array has ABS_CNT=64 slots indexed by axis code.
     absmax  = [0] * ABS_CNT
     absmin  = [0] * ABS_CNT
-    absfuzz = [0] * ABS_CNT   # kernel-side deadband (suppresses micro-jitter)
-    absflat = [0] * ABS_CNT   # kernel-side flat zone around centre
+    absfuzz = [0] * ABS_CNT
+    absflat = [0] * ABS_CNT
 
     for abs_code in _ALL_ABS_CODES:
         absmax[abs_code]  = AXIS_MAX_US
         absmin[abs_code]  = AXIS_MIN_US
-        absfuzz[abs_code] = AXIS_DEADBAND_US
-        absflat[abs_code] = 8   # ±8 µs flat zone at centre (cosmetic)
+        absfuzz[abs_code] = 0              # kernel fuzz disabled; software deadband handles filtering
+        absflat[abs_code] = 50             # ~±50 µs flat zone snaps stick-at-rest to zero
 
-    device_name = b'ppm2joy\x00'.ljust(UINPUT_MAX_NAME_SIZE, b'\x00')
-
+    device_name     = b'ppm2joy\x00'.ljust(UINPUT_MAX_NAME_SIZE, b'\x00')
     uinput_user_dev = struct.pack(
-        # Format: name(80s) bustype vendor product version ff_effects_max
-        #         absmax[64] absmin[64] absfuzz[64] absflat[64]
         f'{UINPUT_MAX_NAME_SIZE}s HHHH I {ABS_CNT}i {ABS_CNT}i {ABS_CNT}i {ABS_CNT}i',
-        device_name,
-        BUS_USB, 0x1209, 0x2641, 1,   # vendor/product IDs for ppm2joy
-        0,                             # ff_effects_max (no force-feedback)
+        device_name, BUS_USB, 0x1209, 0x2641, 1, 0,
         *absmax, *absmin, *absfuzz, *absflat,
     )
     os.write(fd, uinput_user_dev)
     fcntl.ioctl(fd, UI_DEV_CREATE)
+    # Give joydev a moment to attach to the new device before sending events.
+    time.sleep(0.1)
+    # Send initial "released" state for every button so the kernel's state bitmap
+    # matches ChannelOutputState's initial state from the first frame onward.
+    for btn_code in sorted(_ALL_BTN_CODES):
+        _write_input_event(fd, EV_KEY, btn_code, 0)
+    _flush_events(fd)
     return fd
 
 
 def destroy_uinput_joystick(fd):
-    """Destroy the virtual joystick and close the uinput file descriptor."""
+    """Destroy the virtual joystick and close the file descriptor."""
     try:
         fcntl.ioctl(fd, UI_DEV_DESTROY)
     except OSError:
@@ -418,162 +482,186 @@ def destroy_uinput_joystick(fd):
 
 
 def _write_input_event(fd, event_type, event_code, event_value):
-    """Write a single struct input_event to the uinput file descriptor."""
     raw = struct.pack(INPUT_EVENT_STRUCT, 0, 0, event_type, event_code, event_value)
     os.write(fd, raw)
 
 
 def _flush_events(fd):
-    """Send EV_SYN/SYN_REPORT so the kernel delivers the queued events."""
     _write_input_event(fd, EV_SYN, SYN_REPORT, 0)
 
 
-# ── Channel output state and event emission ───────────────────────────────────
+# MARK: - Channel output state and event emission
 
 class ChannelOutputState:
-    """
-    Tracks the last-emitted value for every channel so we can apply the
-    software deadband and avoid redundant button events.
-
-    axis_values    – dict {abs_code: last_emitted_µs}
-    button_states  – dict {btn_code: True/False (pressed)}
-    """
+    """Tracks last-emitted values to apply deadband and avoid redundant events."""
 
     def __init__(self):
-        # Initialise axes at centre; buttons as released
         self.axis_values   = {code: AXIS_CENTER_US for code in _ALL_ABS_CODES}
         self.button_states = {code: False           for code in _ALL_BTN_CODES}
 
 
 def emit_channel_events(fd, state, ppm_frame):
     """
-    Convert a decoded PPM frame into uinput events.
+    Convert a decoded PPM frame into uinput events and flush with EV_SYN.
 
-    Iterates over CHANNEL_MAP, processes each channel value according to
-    its type, and writes EV_ABS / EV_KEY events only when the value has
-    changed enough to warrant an update.  Ends with EV_SYN.
+    Axis channels marked with invert=True have their value mirrored around
+    the centre point before being emitted.
+
+    Returns a list of (channel_label, pressed) for every button state transition
+    that occurred this frame — used by the caller to log button events.
     """
+    transitions = []
+
     for channel_index, channel_def in enumerate(CHANNEL_MAP):
         if channel_index >= len(ppm_frame):
-            break   # transmitter sent fewer channels than mapped
+            break
 
         raw_us       = ppm_frame[channel_index]
         channel_type = channel_def[0]
 
         if channel_type == 'axis':
             abs_code = channel_def[1]
-            if abs(raw_us - state.axis_values[abs_code]) >= AXIS_DEADBAND_US:
-                state.axis_values[abs_code] = raw_us
-                _write_input_event(fd, EV_ABS, abs_code, raw_us)
+            invert   = len(channel_def) > 2 and channel_def[2]
+            value_us = (AXIS_MIN_US + AXIS_MAX_US - raw_us) if invert else raw_us
+            if abs(value_us - state.axis_values[abs_code]) >= AXIS_DEADBAND_US:
+                state.axis_values[abs_code] = value_us
+                _write_input_event(fd, EV_ABS, abs_code, value_us)
 
         elif channel_type == 'button':
             btn_code = channel_def[1]
-            pressed  = raw_us > BUTTON_THRESHOLD_US
+            # Hysteresis: raise threshold to press, lower threshold to release.
+            # Prevents 1-sample jitter near 1500 µs from toggling the button.
+            hys = BUTTON_HYSTERESIS_US if state.button_states[btn_code] else -BUTTON_HYSTERESIS_US
+            pressed = raw_us > BUTTON_THRESHOLD_US - hys
             if pressed != state.button_states[btn_code]:
                 state.button_states[btn_code] = pressed
                 _write_input_event(fd, EV_KEY, btn_code, int(pressed))
+                transitions.append((f'ch{channel_index + 1}', pressed))
 
         elif channel_type == 'three_pos':
             low_btn_code, high_btn_code = channel_def[1], channel_def[2]
-            # Determine which of three zones the slider is in
-            if raw_us < SLIDER_LOW_THRESHOLD:
-                low_pressed, high_pressed = True, False
-            elif raw_us > SLIDER_HIGH_THRESHOLD:
-                low_pressed, high_pressed = False, True
-            else:
-                low_pressed, high_pressed = False, False
-
+            # Hysteresis applied to each slider threshold independently.
+            lo_hys = BUTTON_HYSTERESIS_US if state.button_states[low_btn_code]  else -BUTTON_HYSTERESIS_US
+            hi_hys = BUTTON_HYSTERESIS_US if state.button_states[high_btn_code] else -BUTTON_HYSTERESIS_US
+            low_pressed  = raw_us < SLIDER_LOW_THRESHOLD  + lo_hys
+            high_pressed = raw_us > SLIDER_HIGH_THRESHOLD - hi_hys
             for btn_code, pressed in ((low_btn_code, low_pressed),
                                       (high_btn_code, high_pressed)):
                 if pressed != state.button_states[btn_code]:
                     state.button_states[btn_code] = pressed
                     _write_input_event(fd, EV_KEY, btn_code, int(pressed))
+                    transitions.append((f'ch{channel_index + 1}', pressed))
 
-    # Always send EV_SYN to mark the end of this frame's event batch.
-    # Sending unconditionally (even when nothing changed) ensures the kernel
-    # delivers pending events and keeps button state in sync with readers.
+    # Always send EV_SYN – ensures button state reaches readers even when nothing changed
     _flush_events(fd)
+    return transitions
 
 
-# ── ALSA mixer helpers ────────────────────────────────────────────────────────
+# MARK: - ALSA mixer helpers
 
-_saved_input_sources = {}   # {channel_index: original_source_name}
+_saved_input_sources = {}
 
-def _amixer_cset(alsa_card, control_name, value):
+def _amixer_find_input_source_numids(alsa_card):
+    """
+    Return a list of numids for 'Input Source' controls on the given card,
+    one per capture channel, in index order.
+    """
+    result = subprocess.run(
+        ['amixer', '-c', str(alsa_card), 'controls'],
+        capture_output=True, text=True,
+    )
+    numids = []
+    for line in result.stdout.splitlines():
+        if "name='Input Source'" in line:
+            for part in line.split(','):
+                if part.startswith('numid='):
+                    numids.append(int(part.split('=')[1]))
+    return sorted(numids)
+
+def _amixer_cset_numid(alsa_card, numid, value):
     subprocess.run(
-        ['amixer', '-c', str(alsa_card), 'cset', f'name={control_name}', value],
+        ['amixer', '-c', str(alsa_card), 'cset', f'numid={numid}', value],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
-def _amixer_cget(alsa_card, control_name):
+def _amixer_cget_numid(alsa_card, numid):
+    """Return the current enum item name for the given numid."""
     result = subprocess.run(
-        ['amixer', '-c', str(alsa_card), 'cget', f'name={control_name}'],
+        ['amixer', '-c', str(alsa_card), 'cget', f'numid={numid}'],
         capture_output=True, text=True,
     )
+    items = {}
+    current_index = None
     for line in result.stdout.splitlines():
         line = line.strip()
-        if line.startswith('item0=') or line.startswith(': values='):
-            return line.split('=', 1)[1].strip().strip("'")
+        m_item = line.startswith('; Item #')
+        if m_item:
+            idx   = int(line.split('#')[1].split(' ')[0])
+            label = line.split("'")[1]
+            items[idx] = label
+        elif line.startswith(': values='):
+            current_index = int(line.split('=')[1])
+    if current_index is not None:
+        return items.get(current_index)
     return None
 
 def switch_alsa_input_to_line_in(alsa_card=0):
-    """Save current ALSA input sources, then switch both capture channels to Line In."""
-    for channel_index in range(2):
-        original = _amixer_cget(alsa_card, f'Input Source,{channel_index}')
+    """Save current ALSA Input Source settings, then switch all channels to Line."""
+    numids = _amixer_find_input_source_numids(alsa_card)
+    for i, numid in enumerate(numids):
+        original = _amixer_cget_numid(alsa_card, numid)
         if original:
-            _saved_input_sources[channel_index] = original
-        _amixer_cset(alsa_card, f'Input Source,{channel_index}', 'Line')
+            _saved_input_sources[i] = (numid, original)
+        _amixer_cset_numid(alsa_card, numid, 'Line')
 
 def restore_alsa_input_sources(alsa_card=0):
-    """Restore ALSA input sources to the values saved before we changed them."""
-    fallback_defaults = {0: 'Rear Mic', 1: 'Front Mic'}
-    for channel_index in range(2):
-        source = _saved_input_sources.get(channel_index,
-                                          fallback_defaults[channel_index])
-        _amixer_cset(alsa_card, f'Input Source,{channel_index}', source)
+    """Restore ALSA Input Source settings saved before we changed them."""
+    fallback_defaults = ['Rear Mic', 'Front Mic']
+    numids = _amixer_find_input_source_numids(alsa_card)
+    for i, numid in enumerate(numids):
+        if i in _saved_input_sources:
+            _, value = _saved_input_sources[i]
+        else:
+            value = fallback_defaults[i] if i < len(fallback_defaults) else 'Rear Mic'
+        _amixer_cset_numid(alsa_card, numid, value)
 
 
-# ── Audio capture via PipeWire/PulseAudio ─────────────────────────────────────
+# MARK: - Audio capture via PipeWire/PulseAudio
 
-def start_audio_capture(pipewire_source_name):
-    """
-    Launch parecord and return the Popen handle.
-    Output: raw signed-16-bit little-endian stereo at AUDIO_SAMPLE_RATE Hz.
-    """
+def start_audio_capture(pipewire_source_name, sample_rate=AUDIO_SAMPLE_RATE):
+    """Launch parecord and return the Popen handle (raw s16le stereo)."""
     return subprocess.Popen(
         [
             'parecord',
             f'--device={pipewire_source_name}',
             '--format=s16le',
-            f'--rate={AUDIO_SAMPLE_RATE}',
+            f'--rate={sample_rate}',
             '--channels=2',
             '--raw',
-            '--latency-msec=20',
+            '--latency-msec=5',
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )
 
 
-# ── Monitor display ───────────────────────────────────────────────────────────
+# MARK: - Display helpers
 
 def _axis_bar(value_us, width=6):
-    """Fixed-width ASCII progress bar for an axis value in µs."""
+    """Fixed-width ASCII bar showing position within [AXIS_MIN_US, AXIS_MAX_US]."""
     fraction = (value_us - AXIS_MIN_US) / (AXIS_MAX_US - AXIS_MIN_US)
     filled   = int(max(0.0, min(1.0, fraction)) * width)
     return '[' + '█' * filled + '░' * (width - filled) + ']'
 
-# Short labels for each channel index (used in monitor line)
 _MONITOR_LABELS = ['STR', 'THR', ' c3', ' c4', ' RX', ' RY', ' c7', ' c8', ' c9', 'c10']
 
-def print_monitor_line(ppm_frame, gap_s=0.0):
+def _build_monitor_line(ppm_frame, state=None, hz=0.0):
     """
-    Print a fixed-width one-line summary of all decoded controls.
-    Appends a signal-quality tag: frame rate when healthy, or a gap warning
-    when no frame has been received for more than 200 ms.
+    Return a compact one-line summary of all decoded controls.
 
-    Layout example:
-      STR:[██████] THR:[██████]  c3:■  c4:□  RX:[------]  RY:[------]  c7:MID  c8:□  [70Hz]
+    Axes show the post-inversion value.  Button/slider indicators reflect the
+    actual joystick state from `state` (after hysteresis) when provided, or
+    fall back to a simple threshold comparison against the raw PPM value.
     """
     parts = []
     for channel_index, channel_def in enumerate(CHANNEL_MAP):
@@ -581,7 +669,6 @@ def print_monitor_line(ppm_frame, gap_s=0.0):
         channel_type = channel_def[0]
 
         if channel_index >= len(ppm_frame):
-            # Channel not present in this frame
             if channel_type == 'axis':
                 parts.append(f'{label}:[------]')
             elif channel_type == 'three_pos':
@@ -593,43 +680,56 @@ def print_monitor_line(ppm_frame, gap_s=0.0):
         raw_us = ppm_frame[channel_index]
 
         if channel_type == 'axis':
-            # e.g. "STR:[██████]"  — 10 chars
-            parts.append(f'{label}:{_axis_bar(raw_us)}')
+            invert     = len(channel_def) > 2 and channel_def[2]
+            display_us = (AXIS_MIN_US + AXIS_MAX_US - raw_us) if invert else raw_us
+            parts.append(f'{label}:{_axis_bar(display_us)}')
 
         elif channel_type == 'button':
-            # "c3:■" or "c3:□"  — 4 chars
-            pressed = raw_us > BUTTON_THRESHOLD_US
+            btn_code = channel_def[1]
+            if state is not None:
+                pressed = state.button_states[btn_code]
+            else:
+                pressed = raw_us > BUTTON_THRESHOLD_US
             parts.append(f'{label}:{"■" if pressed else "□"}')
 
         elif channel_type == 'three_pos':
-            # Fixed 3-char position label  — "c7:LO " = 7 chars
-            if raw_us < SLIDER_LOW_THRESHOLD:
-                pos = 'LO '
-            elif raw_us > SLIDER_HIGH_THRESHOLD:
-                pos = 'HI '
+            lo, hi = channel_def[1], channel_def[2]
+            if state is not None:
+                if state.button_states[lo]:
+                    pos = 'LO '
+                elif state.button_states[hi]:
+                    pos = 'HI '
+                else:
+                    pos = 'MID'
             else:
-                pos = 'MID'
+                if raw_us < SLIDER_LOW_THRESHOLD:
+                    pos = 'LO '
+                elif raw_us > SLIDER_HIGH_THRESHOLD:
+                    pos = 'HI '
+                else:
+                    pos = 'MID'
             parts.append(f'{label}:{pos}')
 
-    # Signal quality tag appended after channel data
-    if gap_s > 0.2:
-        tag = f'  [*** GAP {gap_s:.1f}s ***]'
-    elif gap_s > 0:
-        tag = f'  [{1/gap_s:.0f}Hz]'
-    else:
-        tag = ''
-
-    # \r overwrites the current line; \033[K clears to end of line
-    print(f'\r{" ".join(parts)}{tag}\033[K', end='', flush=True)
+    hz_tag = f'  [{hz:.0f}Hz]' if hz > 0 else ''
+    return ' '.join(parts) + hz_tag
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# MARK: - Entry point
 
 DEFAULT_PIPEWIRE_SOURCE = 'alsa_input.pci-0000_00_1f.3.analog-stereo'
-# How many PPM channels the decoder buffers per frame.  Higher than len(CHANNEL_MAP)
-# so that extra channels (e.g. ch9/ch10 if the transmitter sends them) show up in
-# --debug and --monitor output even though they are not yet mapped to joystick events.
+
+# The decoder buffers up to this many channels per frame.  Higher than
+# len(CHANNEL_MAP) so that extra channels from the transmitter (e.g. ch9/ch10)
+# appear in --debug / --monitor output even if not yet mapped to joystick events.
 PPM_DECODE_MAX_CHANNELS = 12
+
+# Number of consecutive frames with the same channel count before that count
+# is accepted as the expected value.  Frames outside the locked count are skipped.
+CHANNEL_LOCK_FRAMES = 5
+
+# Wall-clock gap between decoded frames above this threshold triggers a log warning.
+SIGNAL_GAP_THRESHOLD_S = 0.2
+
 
 def main():
     argument_parser = argparse.ArgumentParser(
@@ -641,7 +741,7 @@ def main():
     )
     argument_parser.add_argument(
         '-m', '--monitor', action='store_true',
-        help='Print live channel values to stdout',
+        help='Show live channel values in a fixed status line',
     )
     argument_parser.add_argument(
         '--no-mixer', action='store_true',
@@ -649,19 +749,29 @@ def main():
     )
     argument_parser.add_argument(
         '--debug', action='store_true',
-        help='Print raw pulse decisions to stderr (sync, channel, skip) for signal analysis',
+        help='Show raw pulse timing in a fixed debug display',
+    )
+    argument_parser.add_argument(
+        '--threshold', type=int, default=AUDIO_THRESHOLD,
+        metavar='N',
+        help=f'int16 level above which the signal is HIGH (default: {AUDIO_THRESHOLD}); '
+             f'increase if noise causes spurious frames when transmitter is off',
+    )
+    argument_parser.add_argument(
+        '--rate', type=int, default=AUDIO_SAMPLE_RATE,
+        metavar='HZ',
+        help=f'Audio sample rate in Hz (default: {AUDIO_SAMPLE_RATE}); '
+             f'higher rates (96000, 192000) improve timing precision',
     )
     args = argument_parser.parse_args()
 
     if not os.path.exists('/dev/uinput'):
         sys.exit('error: /dev/uinput not found – is the uinput kernel module loaded?')
 
-    # Switch the onboard audio input mux to the Line In jack
     if not args.no_mixer:
         print('Switching ALSA Input Source → Line In …')
         switch_alsa_input_to_line_in()
 
-    # Create the virtual joystick device
     print('Creating virtual joystick … ', end='', flush=True)
     try:
         uinput_fd = open_uinput_joystick()
@@ -669,10 +779,21 @@ def main():
         sys.exit('error: cannot open /dev/uinput – check ACL or group membership')
     print('ok')
 
-    # Register shutdown handler so we always clean up on SIGINT/SIGTERM
+    # Calculate how many rows the fixed status area needs
+    fixed_rows = 0
+    if args.monitor:
+        fixed_rows += 1
+    if args.debug:
+        fixed_rows += PPM_DECODE_MAX_CHANNELS + 2
+
+    ui = TerminalUI()
+    if fixed_rows:
+        ui.start(fixed_rows)
+
     audio_capture_proc = None
 
     def shutdown(signum=None, frame=None):
+        ui.stop()
         print('\nShutting down …')
         if audio_capture_proc:
             audio_capture_proc.terminate()
@@ -685,50 +806,98 @@ def main():
     signal.signal(signal.SIGINT,  shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    # Start audio capture subprocess
-    print(f'Capturing from: {args.device}')
-    audio_capture_proc = start_audio_capture(args.device)
+    ui.log(f'Capturing from: {args.device}  ({args.rate} Hz)')
+    audio_capture_proc = start_audio_capture(args.device, args.rate)
 
-    ppm_decoder    = PpmDecoder(max_channels=PPM_DECODE_MAX_CHANNELS, debug=args.debug)
+    ppm_decoder    = PpmDecoder(max_channels=PPM_DECODE_MAX_CHANNELS, debug=args.debug,
+                               sample_rate=args.rate, threshold=args.threshold)
     output_state   = ChannelOutputState()
     frames_decoded = 0
-    last_frame_time = None   # wall time of the most recently decoded frame
+    last_frame_time    = None
+    in_signal_gap      = False
+    # Channel count stability locking
+    expected_ch_count  = None
+    candidate_ch_count = None
+    stable_count       = 0
 
-    print('Waiting for PPM signal … (Ctrl-C to quit)')
+    ui.log('Waiting for PPM signal … (Ctrl-C to quit)')
 
-    # Read audio in chunks of 1024 stereo frames = 4096 bytes
-    AUDIO_CHUNK_BYTES = 1024 * 4
+    AUDIO_CHUNK_BYTES = 1024 * 4   # 1024 stereo frames × 4 bytes each
 
     try:
         while True:
             raw_audio = audio_capture_proc.stdout.read(AUDIO_CHUNK_BYTES)
             if not raw_audio:
-                print('\nAudio capture ended unexpectedly')
+                ui.log('Audio capture ended unexpectedly')
                 break
 
-            # Each stereo frame is 4 bytes: [left_lo, left_hi, right_lo, right_hi]
-            # We only use the left channel (bytes 0–1 of each frame)
             for byte_offset in range(0, len(raw_audio) - 3, 4):
-                left_sample = struct.unpack_from('<h', raw_audio, byte_offset)[0]
+                left_sample     = struct.unpack_from('<h', raw_audio, byte_offset)[0]
                 completed_frame = ppm_decoder.feed(left_sample)
 
                 if completed_frame is None:
                     continue
 
-                now = time.monotonic()
+                # ── Signal gap detection ──────────────────────────────────────
+                now   = time.monotonic()
                 gap_s = (now - last_frame_time) if last_frame_time is not None else 0.0
                 last_frame_time = now
 
+                if gap_s > SIGNAL_GAP_THRESHOLD_S:
+                    ui.log(f'*** SIGNAL GAP {gap_s:.1f}s ***')
+                    in_signal_gap = True
+                elif in_signal_gap:
+                    ui.log('Signal restored')
+                    in_signal_gap = False
+
+                # ── Channel count stability locking ───────────────────────────
+                ch_count = len(completed_frame)
+
+                if expected_ch_count is None:
+                    if ch_count == candidate_ch_count:
+                        stable_count += 1
+                        if stable_count >= CHANNEL_LOCK_FRAMES:
+                            expected_ch_count = ch_count
+                            ui.log(f'Channel count locked: {ch_count}')
+                    else:
+                        candidate_ch_count = ch_count
+                        stable_count       = 1
+                elif ch_count != expected_ch_count:
+                    ui.log(
+                        f'WARNING: channel count {ch_count} ≠ expected '
+                        f'{expected_ch_count} — frame skipped'
+                    )
+                    continue
+
+                # ── Joystick output ───────────────────────────────────────────
                 frames_decoded += 1
                 if frames_decoded == 1:
-                    print(f'\nPPM signal detected — {len(completed_frame)} channels')
+                    ui.log(f'PPM signal detected — {ch_count} channels')
+
+                btn_transitions = emit_channel_events(uinput_fd, output_state, completed_frame)
+                if btn_transitions:
+                    for ch_label, pressed in btn_transitions:
+                        ui.log(f'BTN {ch_label}: {"PRESS  ▶" if pressed else "release ◀"}')
+
+                # ── Display update ────────────────────────────────────────────
+                if ui.active:
+                    status = []
                     if args.monitor:
-                        print()
-
-                emit_channel_events(uinput_fd, output_state, completed_frame)
-
-                if args.monitor:
-                    print_monitor_line(completed_frame, gap_s)
+                        status.append(
+                            _build_monitor_line(completed_frame, output_state,
+                                                ppm_decoder.last_frame_hz)
+                        )
+                    if args.debug:
+                        status.extend(ppm_decoder.last_debug_lines)
+                    ui.update_status(status)
+                else:
+                    if args.monitor:
+                        line = _build_monitor_line(completed_frame, output_state,
+                                                   ppm_decoder.last_frame_hz)
+                        sys.stdout.write(f'\r{line}\033[K')
+                        sys.stdout.flush()
+                    if args.debug and ppm_decoder.last_debug_lines:
+                        ui.render_debug_stderr(ppm_decoder.last_debug_lines)
 
     except KeyboardInterrupt:
         pass
