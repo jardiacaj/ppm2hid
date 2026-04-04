@@ -149,9 +149,9 @@ CHANNEL_MAP = [
     ('axis',   ABS_RY),
 
     # ch7 – three-position slider:
-    #   low  position → BTN_SL_LO pressed
-    #   mid  position → neither pressed
-    #   high position → BTN_SL_HI pressed
+    #   mid  position (PPM ~1500 µs) → neither pressed
+    #   lo   position (PPM ~1100 µs) → BTN_SL_LO pressed
+    #   hi   position (PPM ~1900 µs) → BTN_SL_LO + BTN_SL_HI pressed
     ('three_pos', BTN_SL_LO, BTN_SL_HI),
 
     # ch8 – momentary switch → button
@@ -543,8 +543,9 @@ def emit_channel_events(fd, state, ppm_frame):
             # Hysteresis applied to each slider threshold independently.
             lo_hys = BUTTON_HYSTERESIS_US if state.button_states[low_btn_code]  else -BUTTON_HYSTERESIS_US
             hi_hys = BUTTON_HYSTERESIS_US if state.button_states[high_btn_code] else -BUTTON_HYSTERESIS_US
-            low_pressed  = raw_us < SLIDER_LOW_THRESHOLD  + lo_hys
+            # mid (neutral) → neither; lo zone → BTN_SL_LO; hi zone → BTN_SL_LO + BTN_SL_HI
             high_pressed = raw_us > SLIDER_HIGH_THRESHOLD - hi_hys
+            low_pressed  = (raw_us < SLIDER_LOW_THRESHOLD + lo_hys) or high_pressed
             for btn_code, pressed in ((low_btn_code, low_pressed),
                                       (high_btn_code, high_pressed)):
                 if pressed != state.button_states[btn_code]:

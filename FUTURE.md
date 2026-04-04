@@ -1,7 +1,6 @@
 # Small ones
 * support inverted signal (LOW-active PPM) — add `--invert` flag that negates each sample
   before threshold comparison, or just use `--threshold -1` with the current design
-* remove testdata/ppm_capture.raw — superseded by ppm_capture_192k.raw (192 kHz, good cable)
 
 # Future ideas
 
@@ -16,7 +15,7 @@ passes 9/9 test checks, but two channels were not exercised:
 
 ## Add audio input visualization
 
-Render an oscilloscope-like graph of the audio signal pertaining to each frame so manual analysis can be made.
+Render an oscilloscope-like graph of the unprocessed audio signal pertaining to each frame so manual analysis can be made.
 
 ## Profile configuration files
 
