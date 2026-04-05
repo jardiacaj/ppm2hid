@@ -77,6 +77,11 @@ UI_DEV_DESTROY = 0x5502
 UINPUT_MAX_NAME_SIZE = 80
 ABS_CNT = 64
 
+# USB vendor / product IDs reported by the virtual uinput joystick device.
+# VID 0x1209 is the pid.codes community open-source vendor ID (not a real USB vendor).
+_UINPUT_VENDOR  = 0x1209
+_UINPUT_PRODUCT = 0x2641
+
 # input_event layout on 64-bit Linux: timeval(16) + type/code/value(8) = 24 bytes
 INPUT_EVENT_STRUCT = 'qqHHi'
 
@@ -459,7 +464,7 @@ def open_uinput_joystick():
     device_name     = b'ppm2joy\x00'.ljust(UINPUT_MAX_NAME_SIZE, b'\x00')
     uinput_user_dev = struct.pack(
         f'{UINPUT_MAX_NAME_SIZE}s HHHH I {ABS_CNT}i {ABS_CNT}i {ABS_CNT}i {ABS_CNT}i',
-        device_name, BUS_USB, 0x1209, 0x2641, 1, 0,
+        device_name, BUS_USB, _UINPUT_VENDOR, _UINPUT_PRODUCT, 1, 0,
         *absmax, *absmin, *absfuzz, *absflat,
     )
     os.write(fd, uinput_user_dev)
@@ -766,7 +771,7 @@ def probe_source_for_ppm(source_name, sample_rate=AUDIO_SAMPLE_RATE,
             chunks.append(chunk)
             total += len(chunk)
         raw_audio = b''.join(chunks)
-    except Exception:
+    except (OSError, ValueError, struct.error):
         raw_audio = b''
     finally:
         proc.terminate()

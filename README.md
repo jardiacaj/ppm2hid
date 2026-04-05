@@ -66,7 +66,8 @@ virtual joystick, and runs until interrupted with Ctrl-C.
 ```
 Source (mutually exclusive):
   -d, --device NAME    PipeWire/PulseAudio source name (default: auto-detect)
-  -f, --file PATH      Replay a raw s16le stereo recording
+  -f, --file PATH      Replay a .wav or raw s16le stereo recording
+                       (WAV: sample rate is read from the file header)
 
 Display:
   -m, --monitor        Live channel values in a fixed status line
@@ -100,9 +101,13 @@ python3 record_ppm.py          # records until Ctrl-C
 python3 -m unittest discover -v
 ```
 
-This discovers and runs both test files (`test_joystick.py` and
-`test_ppm2hid.py`). `test_ppm2hid.py` requires `testdata/ppm_capture_192k.raw`
-(included in the repository).
+This discovers and runs all three test files:
+
+- `test_joystick.py` — unit tests for channel-to-HID event mapping (no hardware needed)
+- `test_ppm2hid.py` — decoder integration tests against `testdata/ppm_capture_192k.wav`
+  (good cable, 192 kHz, 15 s — included in the repository)
+- `test_ppm_bad_cable.py` — decoder recovery tests against `testdata/ppm_capture.wav`
+  (bad cable, 48 kHz, 30 s — tests signal drop detection and re-synchronisation)
 
 ## License
 

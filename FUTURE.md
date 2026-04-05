@@ -1,21 +1,22 @@
-# Small ones
-* ~~support inverted signal (LOW-active PPM)~~ ✓ done — auto-detected during probing;
-  negates samples when a LOW-active signal is found on any channel
-
 # Future ideas
 
 ## Test recording gaps
 
-`testdata/ppm_capture_192k.raw` (192 kHz, 15 s, good cable) was recorded and
-passes 9/9 test checks, but two channels were not exercised:
+Current recordings and their test files:
+
+| File | Rate | Duration | Cable | Test file |
+|------|------|----------|-------|-----------|
+| `testdata/ppm_capture_192k.wav` | 192 kHz | 15 s | good | `test_ppm2hid.py` |
+| `testdata/ppm_capture.wav` | 48 kHz | 30 s | bad (signal drops) | `test_ppm_bad_cable.py` |
+
+The good-cable recording passes 9/9 checks but two channels were not exercised:
 
 - **ch7 slider** — only mid position seen (1494–1546 µs); LO (< 1300) and HI (> 1700)
   skipped in the test until a new recording covers them.
 - **ch8 button** — never pressed (stuck at 1100 µs); press/release skipped in the test.
 
-## ~~Add audio input visualization~~ ✓ done
-
-~~Render an oscilloscope-like graph of the unprocessed audio signal pertaining to each frame so manual analysis can be made.~~
+Record a new `testdata/ppm_capture_full.wav` exercising all controls, update
+`test_ppm2hid.py` to use it, and activate the two skipped assertions.
 
 ## Profile configuration files
 
@@ -62,24 +63,14 @@ An interactive mode that helps a user build a profile for their transmitter:
    multi-position) from the observed value range.
 4. Write a profile file ready for use.
 
-## ~~Auto-discovery of PPM audio source~~ ✓ done
-
-~~Enumerate PipeWire/PulseAudio sources, capture a short burst from each, and
-identify which one contains a valid PPM signal (sync pulse + regular channel
-cadence) — similar to what was done manually during development.~~
-
 ## Broader configurability
 
 Expose timing constants and thresholds as command-line flags or config keys
 while keeping the current values as sensible defaults, so the tool adapts to
 transmitters with different PPM parameters without code edits.
 
-## Help me choose a license that welcomes contributions and allows commercial use
-
-## Write a contributions guide
-
 ## Reimplement in rust
 
-## Set up GH workflows for building, testing, releasing
-
 ## Arduino version
+
+## Recording for each button/axis
