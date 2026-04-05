@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "RC transmitter PPM audio input → Linux virtual joystick via uinput"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 authors = [{ name = "Joan Ardiaca Jové" }]
 keywords = ["RC", "PPM", "uinput", "joystick", "PipeWire"]
 classifiers = [
