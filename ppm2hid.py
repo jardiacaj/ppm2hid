@@ -189,12 +189,15 @@ class PpmDecoder:
                  sample_rate=DEFAULT_AUDIO_SAMPLE_RATE, threshold=DEFAULT_AUDIO_THRESHOLD,
                  hysteresis=DEFAULT_AUDIO_HYSTERESIS,
                  sync_min_us=3_000, sync_max_us=50_000,
-                 channel_min_us=500, channel_max_us=2_100):
+                 channel_min_us=500, channel_max_us=2_100,
+                 axis_min_us=1_100, axis_max_us=1_900):
         self.max_channels    = max_channels
         self._debug          = debug
         self._sample_rate    = sample_rate
         self._threshold      = threshold
         self._hysteresis     = hysteresis
+        self._axis_min_us    = axis_min_us
+        self._axis_max_us    = axis_max_us
         # Timing thresholds in samples, derived from sample_rate so the decoder
         # works correctly at 48 kHz, 96 kHz, 192 kHz, etc.
         self._sync_min  = sample_rate * sync_min_us    // 1_000_000
@@ -298,7 +301,7 @@ class PpmDecoder:
                 total_us      = self._smp_to_us(total_samples)
 
                 if self._ch_min <= total_samples <= self._ch_max:
-                    clamped_us = max(1_100, min(1_900, total_us))
+                    clamped_us = max(self._axis_min_us, min(self._axis_max_us, total_us))
                     if self._debug and self._dbg_h_pending:
                         ch_n, h_smp = self._dbg_h_pending
                         self._dbg_items.append(
@@ -1351,7 +1354,9 @@ def main():
                              hysteresis=args.hysteresis,
                              sync_min_us=profile.sync_min_us, sync_max_us=profile.sync_max_us,
                              channel_min_us=profile.channel_min_us,
-                             channel_max_us=profile.channel_max_us)
+                             channel_max_us=profile.channel_max_us,
+                             axis_min_us=profile.axis_min_us,
+                             axis_max_us=profile.axis_max_us)
     output_state = ChannelOutputState(profile.channel_map)
     frames_decoded = 0
     last_frame_time    = None
