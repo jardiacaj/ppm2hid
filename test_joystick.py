@@ -77,14 +77,14 @@ def _emit(sink, state, ppm_frame):
 
 
 def _make_frame(*values):
-    """Build a PPM frame list; pads missing channels with AXIS_CENTER_US.
+    """Build a PPM frame list; pads missing channels with their inactive default.
 
-    ch7 (index 6) is the three-position slider: AXIS_CENTER_US (1500 µs) is the
-    physical mid/rest position, which produces no button presses.
+    ch7 (index 6) is the three-position slider: pad with 1100 µs (physical low
+    position = no buttons pressed).  All other channels pad with AXIS_CENTER_US.
     """
     frame = list(values)
     while len(frame) < len(CHANNEL_MAP):
-        frame.append(AXIS_CENTER_US)
+        frame.append(1100 if len(frame) == 6 else AXIS_CENTER_US)
     return frame
 
 

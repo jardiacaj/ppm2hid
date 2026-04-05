@@ -25,6 +25,7 @@ Channel mapping
 import argparse
 import fcntl
 import os
+import select
 import shutil
 import signal
 import struct
@@ -696,7 +697,21 @@ def probe_source_for_ppm(source_name, sample_rate=AUDIO_SAMPLE_RATE,
         return None
 
     try:
-        raw_audio = proc.stdout.read(probe_bytes)
+        deadline = time.monotonic() + duration_s + 2
+        chunks   = []
+        total    = 0
+        while total < probe_bytes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if not select.select([proc.stdout], [], [], remaining)[0]:
+                break   # timeout — source produced no audio
+            chunk = proc.stdout.read1(probe_bytes - total)
+            if not chunk:   # EOF
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        raw_audio = b''.join(chunks)
     except Exception:
         raw_audio = b''
     finally:
