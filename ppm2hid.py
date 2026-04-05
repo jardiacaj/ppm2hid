@@ -64,8 +64,8 @@ BTN_SW_CH4  = 0x121   # ch4  momentary switch → joystick button 1
 BTN_SL_LO   = 0x122   # ch7  slider low  → joystick button 2
 BTN_SL_HI   = 0x123   # ch7  slider high → joystick button 3
 BTN_SW_CH8  = 0x124   # ch8  momentary switch → joystick button 4
-BTN_SW_CH9  = 0x125   # ch9  (reserved – not yet in CHANNEL_MAP)
-BTN_SW_CH10 = 0x126   # ch10 (reserved – not yet in CHANNEL_MAP)
+BTN_SW_CH9  = 0x125   # ch9  (reserved – not yet in the default channel map)
+BTN_SW_CH10 = 0x126   # ch10 (reserved – not yet in the default channel map)
 
 # Registry of kernel input event code names → integer values.
 # Used by load_profile() to resolve names in TOML [[channel]] entries.
@@ -150,86 +150,24 @@ _UINPUT_PRODUCT = 0x2641
 INPUT_EVENT_STRUCT = 'qqHHi'
 
 
-# MARK: - PPM timing constants
-
-AUDIO_SAMPLE_RATE = 48_000   # Hz — default; overridden by --rate or WAV header
-
-AUDIO_THRESHOLD  = 0       # int16 zero-crossing: PPM signal swings between +32767 and −32768
-                           # (works at all sample rates since the ADC clips both polarity)
-                           # Override with --threshold if your audio path has a DC offset.
-AUDIO_HYSTERESIS = 4_000   # Schmitt trigger dead zone (±4000 out of ±32768 ≈ ±12 %).
-                           # Noise must not exceed this amplitude to avoid phantom frames.
-                           # A real PPM signal swings nearly full-range, so this is safe.
-
-
-# MARK: - Axis / button calibration
-
-AXIS_MIN_US    = 1_100
-AXIS_MAX_US    = 1_900
-AXIS_CENTER_US = (AXIS_MIN_US + AXIS_MAX_US) // 2   # 1500 µs
-
-# Suppress axis events smaller than this to remove quantisation noise.
-# 42 µs ≈ 2 samples at 48 kHz; conservative enough to be safe at higher rates too.
-AXIS_DEADBAND_US = max(1, 2 * 1_000_000 // AUDIO_SAMPLE_RATE)
-
-BUTTON_THRESHOLD_US   = AXIS_CENTER_US   # value above this → pressed
-# Hysteresis applied around button/slider thresholds to prevent toggling from
-# 1-sample jitter (~21 µs at 48 kHz).  Once a button is pressed it stays pressed
-# until the value falls BELOW (threshold − hysteresis), and vice-versa.
-BUTTON_HYSTERESIS_US  = 21               # ≈ 1 sample at 48 kHz
-SLIDER_LOW_THRESHOLD  = 1_300            # ch7 low position threshold (µs)
-SLIDER_HIGH_THRESHOLD = 1_700            # ch7 high position threshold (µs)
-
-
-# MARK: - Channel map
+# MARK: - Defaults
 #
-# Each entry is a tuple whose first element is the channel type:
+# All constants below are defaults only.  They can be overridden at runtime:
 #
-#   ('axis',      abs_code)           – proportional axis, value passed through
-#   ('axis',      abs_code, True)     – proportional axis, value inverted
-#   ('button',    btn_code)           – momentary switch → button
-#   ('three_pos', low_btn, high_btn)  – three-position slider → two buttons
+#   DEFAULT_AUDIO_SAMPLE_RATE   --rate N        or read from the WAV header
+#   DEFAULT_AUDIO_THRESHOLD     --threshold N
+#   DEFAULT_AUDIO_HYSTERESIS    --hysteresis N
+#   AXIS_*  BUTTON_*  SLIDER_*         profile [signal] section (--config)
 
-CHANNEL_MAP = [
-    # ch1 – main steering stick (left/right) → first joystick axis
-    ('axis',   ABS_X),
+DEFAULT_AUDIO_SAMPLE_RATE = 48_000   # Hz
 
-    # ch2 – throttle/brake stick, inverted so that pushing forward → positive
-    ('axis',   ABS_Y, True),
+DEFAULT_AUDIO_THRESHOLD  = 0       # int16 zero-crossing — PPM signal swings ±32768 so this
+                           # works at all sample rates.  Raise if your audio path has
+                           # a DC offset.
+DEFAULT_AUDIO_HYSTERESIS = 4_000   # Schmitt trigger dead zone (±4000 ≈ ±12 % of int16 range).
+                           # Noise below this amplitude is ignored.  A full-swing PPM
+                           # signal always exceeds it, so no valid pulses are lost.
 
-    # ch3 – momentary switch → button
-    ('button', BTN_SW_CH3),
-
-    # ch4 – momentary switch → button
-    ('button', BTN_SW_CH4),
-
-    # ch5 – auxiliary proportional channel
-    ('axis',   ABS_RX),
-
-    # ch6 – auxiliary proportional channel
-    ('axis',   ABS_RY),
-
-    # ch7 – three-position slider:
-    #   low  position (PPM ~1100 µs) → neither pressed
-    #   mid  position (PPM ~1500 µs) → BTN_SL_LO pressed
-    #   high position (PPM ~1900 µs) → BTN_SL_LO + BTN_SL_HI pressed
-    ('three_pos', BTN_SL_LO, BTN_SL_HI),
-
-    # ch8 – momentary switch → button
-    ('button', BTN_SW_CH8),
-]
-
-# Derived sets of all axis and button codes declared in the channel map
-_ALL_ABS_CODES = set()
-_ALL_BTN_CODES = set()
-for _ch in CHANNEL_MAP:
-    if _ch[0] == 'axis':
-        _ALL_ABS_CODES.add(_ch[1])
-    elif _ch[0] == 'button':
-        _ALL_BTN_CODES.add(_ch[1])
-    elif _ch[0] == 'three_pos':
-        _ALL_BTN_CODES.add(_ch[1])
-        _ALL_BTN_CODES.add(_ch[2])
 
 
 # MARK: - PPM frame decoder
@@ -248,8 +186,8 @@ class PpmDecoder:
     """
 
     def __init__(self, max_channels=10, debug=False,
-                 sample_rate=AUDIO_SAMPLE_RATE, threshold=AUDIO_THRESHOLD,
-                 hysteresis=AUDIO_HYSTERESIS,
+                 sample_rate=DEFAULT_AUDIO_SAMPLE_RATE, threshold=DEFAULT_AUDIO_THRESHOLD,
+                 hysteresis=DEFAULT_AUDIO_HYSTERESIS,
                  sync_min_us=3_000, sync_max_us=50_000,
                  channel_min_us=500, channel_max_us=2_100):
         self.max_channels    = max_channels
@@ -360,7 +298,7 @@ class PpmDecoder:
                 total_us      = self._smp_to_us(total_samples)
 
                 if self._ch_min <= total_samples <= self._ch_max:
-                    clamped_us = max(AXIS_MIN_US, min(AXIS_MAX_US, total_us))
+                    clamped_us = max(1_100, min(1_900, total_us))
                     if self._debug and self._dbg_h_pending:
                         ch_n, h_smp = self._dbg_h_pending
                         self._dbg_items.append(
@@ -506,13 +444,14 @@ class TerminalUI:
 def open_uinput_joystick(profile=None):
     """
     Create a virtual joystick via /dev/uinput.
-    Registers every axis and button code declared in the profile's channel map
-    (or the module-level CHANNEL_MAP when profile is None).
+    Registers every axis and button code declared in the profile's channel map.
     Returns the open file descriptor.
     """
-    cm       = profile.channel_map if profile is not None else CHANNEL_MAP
-    axis_min = profile.axis_min_us if profile is not None else AXIS_MIN_US
-    axis_max = profile.axis_max_us if profile is not None else AXIS_MAX_US
+    if profile is None:
+        profile = Profile()
+    cm       = profile.channel_map
+    axis_min = profile.axis_min_us
+    axis_max = profile.axis_max_us
 
     all_abs = set()
     all_btn = set()
@@ -594,10 +533,11 @@ class ChannelOutputState:
     """Tracks last-emitted values to apply deadband and avoid redundant events."""
 
     def __init__(self, channel_map=None):
-        cm = channel_map if channel_map is not None else CHANNEL_MAP
+        if channel_map is None:
+            channel_map = Profile().channel_map
         abs_codes = set()
         btn_codes = set()
-        for ch in cm:
+        for ch in channel_map:
             if ch is None:
                 continue
             if ch[0] == 'axis':
@@ -607,8 +547,8 @@ class ChannelOutputState:
             elif ch[0] == 'three_pos':
                 btn_codes.add(ch[1])
                 btn_codes.add(ch[2])
-        self.axis_values   = {code: AXIS_CENTER_US for code in abs_codes}
-        self.button_states = {code: False           for code in btn_codes}
+        self.axis_values   = {code: 1_500 for code in abs_codes}
+        self.button_states = {code: False for code in btn_codes}
 
 
 def emit_channel_events(fd, state, ppm_frame, profile=None):
@@ -621,14 +561,16 @@ def emit_channel_events(fd, state, ppm_frame, profile=None):
     Returns a list of (channel_label, pressed) for every button state transition
     that occurred this frame — used by the caller to log button events.
     """
-    cm            = profile.channel_map              if profile is not None else CHANNEL_MAP
-    axis_min      = profile.axis_min_us              if profile is not None else AXIS_MIN_US
-    axis_max      = profile.axis_max_us              if profile is not None else AXIS_MAX_US
-    deadband      = profile.axis_deadband_us         if profile is not None else AXIS_DEADBAND_US
-    btn_threshold = profile.button_threshold_us      if profile is not None else BUTTON_THRESHOLD_US
-    btn_hysteresis = profile.button_hysteresis_us    if profile is not None else BUTTON_HYSTERESIS_US
-    sl_lo         = profile.slider_low_threshold_us  if profile is not None else SLIDER_LOW_THRESHOLD
-    sl_hi         = profile.slider_high_threshold_us if profile is not None else SLIDER_HIGH_THRESHOLD
+    if profile is None:
+        profile = Profile()
+    cm             = profile.channel_map
+    axis_min       = profile.axis_min_us
+    axis_max       = profile.axis_max_us
+    deadband       = profile.axis_deadband_us
+    btn_threshold  = profile.button_threshold_us
+    btn_hysteresis = profile.button_hysteresis_us
+    sl_lo          = profile.slider_low_threshold_us
+    sl_hi          = profile.slider_high_threshold_us
 
     transitions = []
 
@@ -778,7 +720,7 @@ class _WavSource:
         self._wf.close()
 
 
-def open_audio_file(path, hint_rate=AUDIO_SAMPLE_RATE):
+def open_audio_file(path, hint_rate=DEFAULT_AUDIO_SAMPLE_RATE):
     """
     Open a .wav or raw s16le stereo audio file.
     Returns (source, actual_sample_rate).
@@ -791,7 +733,7 @@ def open_audio_file(path, hint_rate=AUDIO_SAMPLE_RATE):
     return open(path, 'rb'), hint_rate
 
 
-def _get_file_sample_rate(path, hint_rate=AUDIO_SAMPLE_RATE):
+def _get_file_sample_rate(path, hint_rate=DEFAULT_AUDIO_SAMPLE_RATE):
     """Return the sample rate from a .wav header, or hint_rate for raw files."""
     if path.lower().endswith('.wav'):
         try:
@@ -804,7 +746,7 @@ def _get_file_sample_rate(path, hint_rate=AUDIO_SAMPLE_RATE):
 
 # MARK: - Audio capture via PipeWire/PulseAudio
 
-def start_audio_capture(pipewire_source_name, sample_rate=AUDIO_SAMPLE_RATE):
+def start_audio_capture(pipewire_source_name, sample_rate=DEFAULT_AUDIO_SAMPLE_RATE):
     """Launch parecord and return the Popen handle (raw s16le stereo)."""
     return subprocess.Popen(
         [
@@ -842,8 +784,8 @@ def list_pipewire_sources():
     return sources
 
 
-def probe_source_for_ppm(source_name, sample_rate=AUDIO_SAMPLE_RATE,
-                          threshold=AUDIO_THRESHOLD, hysteresis=AUDIO_HYSTERESIS,
+def probe_source_for_ppm(source_name, sample_rate=DEFAULT_AUDIO_SAMPLE_RATE,
+                          threshold=DEFAULT_AUDIO_THRESHOLD, hysteresis=DEFAULT_AUDIO_HYSTERESIS,
                           duration_s=0.5):
     """
     Capture a short burst from *source_name* and return the channel index
@@ -914,8 +856,8 @@ def probe_source_for_ppm(source_name, sample_rate=AUDIO_SAMPLE_RATE,
     return None
 
 
-def probe_file_for_ppm(file_path, sample_rate=AUDIO_SAMPLE_RATE,
-                        threshold=AUDIO_THRESHOLD, hysteresis=AUDIO_HYSTERESIS,
+def probe_file_for_ppm(file_path, sample_rate=DEFAULT_AUDIO_SAMPLE_RATE,
+                        threshold=DEFAULT_AUDIO_THRESHOLD, hysteresis=DEFAULT_AUDIO_HYSTERESIS,
                         duration_s=0.5):
     """
     Read the first *duration_s* seconds of a .wav or raw s16le stereo file and
@@ -950,8 +892,8 @@ def probe_file_for_ppm(file_path, sample_rate=AUDIO_SAMPLE_RATE,
     return None
 
 
-def discover_ppm_source(sample_rate=AUDIO_SAMPLE_RATE, threshold=AUDIO_THRESHOLD,
-                         hysteresis=AUDIO_HYSTERESIS):
+def discover_ppm_source(sample_rate=DEFAULT_AUDIO_SAMPLE_RATE, threshold=DEFAULT_AUDIO_THRESHOLD,
+                         hysteresis=DEFAULT_AUDIO_HYSTERESIS):
     """
     Enumerate PipeWire/PulseAudio sources and return ``(source_name, channel, invert)``
     for the first source that carries a valid PPM signal (channel 0 = left, 1 = right;
@@ -981,44 +923,56 @@ def discover_ppm_source(sample_rate=AUDIO_SAMPLE_RATE, threshold=AUDIO_THRESHOLD
 
 # MARK: - Display helpers
 
-def _axis_bar(value_us, width=6, axis_min=AXIS_MIN_US, axis_max=AXIS_MAX_US):
+def _axis_bar(value_us, width=6, axis_min=1_100, axis_max=1_900):
     """Fixed-width ASCII bar showing position within [axis_min, axis_max]."""
     fraction = (value_us - axis_min) / (axis_max - axis_min)
     filled   = int(max(0.0, min(1.0, fraction)) * width)
     return '[' + '█' * filled + '░' * (width - filled) + ']'
 
-_MONITOR_LABELS = ['STR', 'THR', ' c3', ' c4', ' RX', ' RY', ' c7', ' c8', ' c9', 'c10']
-
-
 # MARK: - Transmitter profile
 
 class Profile:
     """
-    Configurable parameters for a transmitter profile.
+    All configurable parameters for a transmitter.  This is the single source
+    of truth for calibration, channel mapping, and display labels.
 
-    Default values match the module-level constants so that ``Profile()``
-    produces behaviour identical to the built-in channel mapping.
+    ``Profile()`` produces the built-in Absima CR10P / DDF-350 defaults.
+    Use ``load_profile(path)`` to override from a TOML file.
     """
 
     def __init__(self):
         self.device_name              = ''
         # Signal timing — all in microseconds
-        self.axis_min_us              = AXIS_MIN_US
-        self.axis_max_us              = AXIS_MAX_US
-        self.axis_center_us           = AXIS_CENTER_US
-        self.axis_deadband_us         = AXIS_DEADBAND_US
-        self.button_threshold_us      = BUTTON_THRESHOLD_US
-        self.button_hysteresis_us     = BUTTON_HYSTERESIS_US
-        self.slider_low_threshold_us  = SLIDER_LOW_THRESHOLD
-        self.slider_high_threshold_us = SLIDER_HIGH_THRESHOLD
+        self.axis_min_us              = 1_100
+        self.axis_max_us              = 1_900
+        self.axis_center_us           = 1_500
+        self.axis_deadband_us         = 42
+        self.button_threshold_us      = 1_500
+        self.button_hysteresis_us     = 21
+        self.slider_low_threshold_us  = 1_300
+        self.slider_high_threshold_us = 1_700
         self.sync_min_us              = 3_000
         self.sync_max_us              = 50_000
         self.channel_min_us           = 500
         self.channel_max_us           = 2_100
-        # Channel map — same tuple format as CHANNEL_MAP; None = unmapped slot
-        self.channel_map              = list(CHANNEL_MAP)
+        # Channel map — each entry is a tuple whose first element is the type:
+        #   ('axis',      abs_code)           – proportional axis
+        #   ('axis',      abs_code, True)     – proportional axis, inverted
+        #   ('button',    btn_code)           – momentary switch
+        #   ('three_pos', low_btn, high_btn)  – three-position slider
+        #   None                              – unmapped slot
+        self.channel_map = [
+            ('axis',      ABS_X),                  # ch1 steering
+            ('axis',      ABS_Y, True),             # ch2 throttle (inverted)
+            ('button',    BTN_SW_CH3),              # ch3 momentary
+            ('button',    BTN_SW_CH4),              # ch4 momentary
+            ('axis',      ABS_RX),                  # ch5 aux axis
+            ('axis',      ABS_RY),                  # ch6 aux axis
+            ('three_pos', BTN_SL_LO, BTN_SL_HI),   # ch7 slider
+            ('button',    BTN_SW_CH8),              # ch8 momentary
+        ]
         # Per-channel display labels aligned with channel_map
-        self.monitor_labels           = list(_MONITOR_LABELS[:len(CHANNEL_MAP)])
+        self.monitor_labels = ['STR', 'THR', ' c3', ' c4', ' RX', ' RY', ' c7', ' c8']
 
 
 def load_profile(path):
@@ -1099,13 +1053,15 @@ def _build_monitor_line(ppm_frame, state=None, hz=0.0, profile=None):
     actual joystick state from `state` (after hysteresis) when provided, or
     fall back to a simple threshold comparison against the raw PPM value.
     """
-    cm       = profile.channel_map              if profile is not None else CHANNEL_MAP
-    labels   = profile.monitor_labels           if profile is not None else _MONITOR_LABELS
-    axis_min = profile.axis_min_us              if profile is not None else AXIS_MIN_US
-    axis_max = profile.axis_max_us              if profile is not None else AXIS_MAX_US
-    btn_thr  = profile.button_threshold_us      if profile is not None else BUTTON_THRESHOLD_US
-    sl_lo    = profile.slider_low_threshold_us  if profile is not None else SLIDER_LOW_THRESHOLD
-    sl_hi    = profile.slider_high_threshold_us if profile is not None else SLIDER_HIGH_THRESHOLD
+    if profile is None:
+        profile = Profile()
+    cm       = profile.channel_map
+    labels   = profile.monitor_labels
+    axis_min = profile.axis_min_us
+    axis_max = profile.axis_max_us
+    btn_thr  = profile.button_threshold_us
+    sl_lo    = profile.slider_low_threshold_us
+    sl_hi    = profile.slider_high_threshold_us
 
     parts = []
     for channel_index, channel_def in enumerate(cm):
@@ -1160,7 +1116,7 @@ def _build_monitor_line(ppm_frame, state=None, hz=0.0, profile=None):
     return ' '.join(parts) + hz_tag
 
 
-def _render_oscilloscope(samples, threshold=AUDIO_THRESHOLD, width=72, height=7):
+def _render_oscilloscope(samples, threshold=DEFAULT_AUDIO_THRESHOLD, width=72, height=7):
     """
     Render *samples* as a fixed-size ASCII oscilloscope waveform.
 
@@ -1209,7 +1165,7 @@ def _render_oscilloscope(samples, threshold=AUDIO_THRESHOLD, width=72, height=7)
 # MARK: - Entry point
 
 # The decoder buffers up to this many channels per frame.  Higher than
-# len(CHANNEL_MAP) so that extra channels from the transmitter (e.g. ch9/ch10)
+# len(profile.channel_map) so that extra channels from the transmitter (e.g. ch9/ch10)
 # appear in --debug / --monitor output even if not yet mapped to joystick events.
 PPM_DECODE_MAX_CHANNELS = 12
 
@@ -1263,22 +1219,22 @@ def main():
         help='Show raw pulse timing in a fixed debug display',
     )
     argument_parser.add_argument(
-        '--threshold', type=int, default=AUDIO_THRESHOLD,
+        '--threshold', type=int, default=DEFAULT_AUDIO_THRESHOLD,
         metavar='N',
-        help=f'int16 midpoint for HIGH/LOW detection (default: {AUDIO_THRESHOLD}); '
+        help=f'int16 midpoint for HIGH/LOW detection (default: {DEFAULT_AUDIO_THRESHOLD}); '
              f'adjust if the audio path has a DC offset',
     )
     argument_parser.add_argument(
-        '--hysteresis', type=int, default=AUDIO_HYSTERESIS,
+        '--hysteresis', type=int, default=DEFAULT_AUDIO_HYSTERESIS,
         metavar='N',
-        help=f'int16 dead zone around --threshold (default: {AUDIO_HYSTERESIS}); '
+        help=f'int16 dead zone around --threshold (default: {DEFAULT_AUDIO_HYSTERESIS}); '
              'signal must exceed threshold+N to register HIGH and drop below '
              'threshold-N to register LOW — filters noise when the transmitter is off',
     )
     argument_parser.add_argument(
-        '--rate', type=int, default=AUDIO_SAMPLE_RATE,
+        '--rate', type=int, default=DEFAULT_AUDIO_SAMPLE_RATE,
         metavar='HZ',
-        help=f'Audio sample rate in Hz (default: {AUDIO_SAMPLE_RATE}); '
+        help=f'Audio sample rate in Hz (default: {DEFAULT_AUDIO_SAMPLE_RATE}); '
              f'higher rates (96000, 192000) improve timing precision',
     )
     argument_parser.add_argument(

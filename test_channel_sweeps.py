@@ -29,13 +29,9 @@ import unittest
 import wave
 
 sys.path.insert(0, os.path.dirname(__file__))
-from ppm2hid import (
-    PpmDecoder,
-    CHANNEL_MAP,
-    AXIS_MIN_US, AXIS_MAX_US,
-    BUTTON_THRESHOLD_US,
-    SLIDER_LOW_THRESHOLD, SLIDER_HIGH_THRESHOLD,
-)
+from ppm2hid import PpmDecoder, Profile
+
+_PROFILE = Profile()
 
 _TESTDATA = os.path.join(os.path.dirname(__file__), 'testdata')
 
@@ -53,7 +49,7 @@ def _load_samples(path):
 def _decode_channel(path, ch_index):
     """Decode all frames from *path* and return the values for *ch_index*."""
     samples, rate = _load_samples(path)
-    decoder = PpmDecoder(max_channels=len(CHANNEL_MAP), sample_rate=rate)
+    decoder = PpmDecoder(max_channels=len(_PROFILE.channel_map), sample_rate=rate)
     values = []
     for s in samples:
         frame = decoder.feed(s)
@@ -67,7 +63,7 @@ def _decode_channel(path, ch_index):
 _AXIS_SATURATION = 0.80   # must reach within this fraction of full range
 
 def _check_axis_full_range(tc, values, label):
-    required_span = int((AXIS_MAX_US - AXIS_MIN_US) * _AXIS_SATURATION)
+    required_span = int((_PROFILE.axis_max_us - _PROFILE.axis_min_us) * _AXIS_SATURATION)
     span = max(values) - min(values)
     lo, hi = min(values), max(values)
     tc.assertGreaterEqual(
@@ -76,36 +72,36 @@ def _check_axis_full_range(tc, values, label):
         f'expected ≥ {required_span} µs — move the control to full extremes',
     )
     tc.assertLessEqual(
-        lo, AXIS_MIN_US + 200,
+        lo, _PROFILE.axis_min_us + 200,
         f'{label}: never reached low end (minimum observed: {lo} µs)',
     )
     tc.assertGreaterEqual(
-        hi, AXIS_MAX_US - 200,
+        hi, _PROFILE.axis_max_us - 200,
         f'{label}: never reached high end (maximum observed: {hi} µs)',
     )
 
 
 def _check_button_toggled(tc, values, label):
-    pressed  = any(v > BUTTON_THRESHOLD_US for v in values)
-    released = any(v <= BUTTON_THRESHOLD_US for v in values)
+    pressed  = any(v > _PROFILE.button_threshold_us for v in values)
+    released = any(v <= _PROFILE.button_threshold_us for v in values)
     tc.assertTrue(pressed,
-                  f'{label}: button never pressed (no value > {BUTTON_THRESHOLD_US} µs)')
+                  f'{label}: button never pressed (no value > {_PROFILE.button_threshold_us} µs)')
     tc.assertTrue(released,
-                  f'{label}: button never released (no value ≤ {BUTTON_THRESHOLD_US} µs)')
+                  f'{label}: button never released (no value ≤ {_PROFILE.button_threshold_us} µs)')
 
 
 def _check_slider_all_positions(tc, values, label):
-    saw_lo  = any(v < SLIDER_LOW_THRESHOLD for v in values)
-    saw_mid = any(SLIDER_LOW_THRESHOLD <= v <= SLIDER_HIGH_THRESHOLD for v in values)
-    saw_hi  = any(v > SLIDER_HIGH_THRESHOLD for v in values)
+    saw_lo  = any(v < _PROFILE.slider_low_threshold_us for v in values)
+    saw_mid = any(_PROFILE.slider_low_threshold_us <= v <= _PROFILE.slider_high_threshold_us for v in values)
+    saw_hi  = any(v > _PROFILE.slider_high_threshold_us for v in values)
     tc.assertTrue(saw_lo,
-                  f'{label}: LOW position (< {SLIDER_LOW_THRESHOLD} µs) never seen '
+                  f'{label}: LOW position (< {_PROFILE.slider_low_threshold_us} µs) never seen '
                   f'(range: {min(values)}–{max(values)} µs)')
     tc.assertTrue(saw_mid,
-                  f'{label}: MID position ({SLIDER_LOW_THRESHOLD}–{SLIDER_HIGH_THRESHOLD} µs) '
+                  f'{label}: MID position ({_PROFILE.slider_low_threshold_us}–{_PROFILE.slider_high_threshold_us} µs) '
                   f'never seen')
     tc.assertTrue(saw_hi,
-                  f'{label}: HIGH position (> {SLIDER_HIGH_THRESHOLD} µs) never seen')
+                  f'{label}: HIGH position (> {_PROFILE.slider_high_threshold_us} µs) never seen')
 
 
 # ── Mixin base ────────────────────────────────────────────────────────────────
@@ -116,7 +112,7 @@ class _SweepMixin:
 
     Subclasses must define:
       RECORDING_PATH  – absolute path to the WAV file
-      CHANNEL_INDEX   – 0-based index in CHANNEL_MAP
+      CHANNEL_INDEX   – 0-based index in _PROFILE.channel_map
     """
 
     @classmethod

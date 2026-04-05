@@ -27,15 +27,9 @@ import unittest
 import wave
 
 sys.path.insert(0, os.path.dirname(__file__))
-from ppm2hid import (
-    PpmDecoder,
-    CHANNEL_MAP,
-    AUDIO_SAMPLE_RATE,
-    AXIS_MIN_US, AXIS_MAX_US, AXIS_CENTER_US,
-    BUTTON_THRESHOLD_US,
-    SLIDER_LOW_THRESHOLD, SLIDER_HIGH_THRESHOLD,
-    AXIS_DEADBAND_US,
-)
+from ppm2hid import PpmDecoder, Profile, DEFAULT_AUDIO_SAMPLE_RATE
+
+_PROFILE = Profile()
 
 RECORDING_PATH       = os.path.join(os.path.dirname(__file__), 'testdata', 'ppm_capture_192k.wav')
 RECORDING_DURATION_S = 15
@@ -59,7 +53,7 @@ def _load_left_channel_samples(path):
     else:
         with open(path, 'rb') as f:
             raw = f.read()
-        sample_rate = AUDIO_SAMPLE_RATE
+        sample_rate = DEFAULT_AUDIO_SAMPLE_RATE
     samples = [
         struct.unpack_from('<h', raw, offset)[0]
         for offset in range(0, len(raw) - 3, 4)
@@ -69,7 +63,7 @@ def _load_left_channel_samples(path):
 
 def _decode_all_frames(samples, sample_rate):
     """Run every sample through PpmDecoder and collect complete frames."""
-    decoder = PpmDecoder(max_channels=len(CHANNEL_MAP), sample_rate=sample_rate)
+    decoder = PpmDecoder(max_channels=len(_PROFILE.channel_map), sample_rate=sample_rate)
     frames = []
     for sample in samples:
         result = decoder.feed(sample)
@@ -79,7 +73,7 @@ def _decode_all_frames(samples, sample_rate):
 
 
 def _channel_indices_of_type(channel_type):
-    return [i for i, ch in enumerate(CHANNEL_MAP) if ch[0] == channel_type]
+    return [i for i, ch in enumerate(_PROFILE.channel_map) if ch[0] == channel_type]
 
 
 # ── Test class ────────────────────────────────────────────────────────────────
@@ -124,8 +118,8 @@ class TestPpmDecoder(unittest.TestCase):
         self.assertLessEqual(rate, 90, f"Frame rate too high: {rate:.1f} Hz")
 
     def test_channel_count(self):
-        """Every frame should contain exactly as many channels as CHANNEL_MAP."""
-        expected = len(CHANNEL_MAP)
+        """Every frame should contain exactly as many channels as _PROFILE.channel_map."""
+        expected = len(_PROFILE.channel_map)
         bad = [i for i, f in enumerate(self.frames) if len(f) != expected]
         self.assertFalse(
             bad,
@@ -135,11 +129,11 @@ class TestPpmDecoder(unittest.TestCase):
         )
 
     def test_values_in_range(self):
-        """All decoded µs values must lie within [AXIS_MIN_US, AXIS_MAX_US]."""
+        """All decoded µs values must lie within [_PROFILE.axis_min_us, _PROFILE.axis_max_us]."""
         violations = []
         for frame_index, frame in enumerate(self.frames):
             for ch_index, value in enumerate(frame):
-                if not (AXIS_MIN_US <= value <= AXIS_MAX_US):
+                if not (_PROFILE.axis_min_us <= value <= _PROFILE.axis_max_us):
                     violations.append((frame_index, ch_index, value))
         self.assertFalse(
             violations,
@@ -154,7 +148,7 @@ class TestPpmDecoder(unittest.TestCase):
         the declared range during the recording.
         """
         saturation_threshold = 0.80
-        required_span = int((AXIS_MAX_US - AXIS_MIN_US) * saturation_threshold)
+        required_span = int((_PROFILE.axis_max_us - _PROFILE.axis_min_us) * saturation_threshold)
 
         for ch_index in _channel_indices_of_type('axis'):
             values = [frame[ch_index] for frame in self.frames if ch_index < len(frame)]
@@ -173,12 +167,12 @@ class TestPpmDecoder(unittest.TestCase):
         above and below centre by at least 30 % of the half-range.
         """
         ch_index      = 1
-        half_range    = AXIS_MAX_US - AXIS_CENTER_US   # 400 µs
+        half_range    = _PROFILE.axis_max_us - _PROFILE.axis_center_us   # 400 µs
         min_excursion = int(half_range * 0.30)         # 120 µs
 
         values    = [frame[ch_index] for frame in self.frames if ch_index < len(frame)]
-        max_above = max(v - AXIS_CENTER_US for v in values)
-        max_below = max(AXIS_CENTER_US - v for v in values)
+        max_above = max(v - _PROFILE.axis_center_us for v in values)
+        max_below = max(_PROFILE.axis_center_us - v for v in values)
 
         self.assertGreaterEqual(
             max_above, min_excursion,
@@ -202,19 +196,19 @@ class TestPpmDecoder(unittest.TestCase):
             if ch_index not in _EXERCISED_BUTTON_INDICES:
                 continue
 
-            pressed  = any(v > BUTTON_THRESHOLD_US for v in values)
-            released = any(v <= BUTTON_THRESHOLD_US for v in values)
+            pressed  = any(v > _PROFILE.button_threshold_us for v in values)
+            released = any(v <= _PROFILE.button_threshold_us for v in values)
             lo, hi   = min(values), max(values)
 
             self.assertTrue(
                 pressed,
                 f"ch{ch_index+1} (button) was never pressed "
-                f"(all values ≤ {BUTTON_THRESHOLD_US} µs)"
+                f"(all values ≤ {_PROFILE.button_threshold_us} µs)"
             )
             self.assertTrue(
                 released,
                 f"ch{ch_index+1} (button) was never released "
-                f"(all values > {BUTTON_THRESHOLD_US} µs)"
+                f"(all values > {_PROFILE.button_threshold_us} µs)"
             )
 
     def test_slider_mid_detected(self):
@@ -224,10 +218,10 @@ class TestPpmDecoder(unittest.TestCase):
         """
         ch_index = 6
         values   = [frame[ch_index] for frame in self.frames if ch_index < len(frame)]
-        saw_mid  = any(SLIDER_LOW_THRESHOLD <= v <= SLIDER_HIGH_THRESHOLD for v in values)
+        saw_mid  = any(_PROFILE.slider_low_threshold_us <= v <= _PROFILE.slider_high_threshold_us for v in values)
         self.assertTrue(
             saw_mid,
-            f"ch7 slider: mid position ({SLIDER_LOW_THRESHOLD}–{SLIDER_HIGH_THRESHOLD} µs) "
+            f"ch7 slider: mid position ({_PROFILE.slider_low_threshold_us}–{_PROFILE.slider_high_threshold_us} µs) "
             f"never seen (range was {min(values)}–{max(values)} µs)"
         )
 

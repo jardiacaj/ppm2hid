@@ -16,24 +16,23 @@ from ppm2hid import (
     _build_monitor_line,
     _render_oscilloscope,
     ChannelOutputState,
-    CHANNEL_MAP,
-    AXIS_MIN_US, AXIS_MAX_US, AXIS_CENTER_US,
-    BUTTON_THRESHOLD_US,
-    SLIDER_LOW_THRESHOLD, SLIDER_HIGH_THRESHOLD,
+    Profile,
     BTN_SL_LO, BTN_SL_HI,
     BTN_SW_CH3,
 )
+
+_PROFILE = Profile()
 
 
 # ── Helpers ──────────────────────────��────────────────────��───────────────────
 
 def _full_frame(*overrides):
     """
-    Build an 8-channel PPM frame with all channels at AXIS_CENTER_US,
+    Build an 8-channel PPM frame with all channels at _PROFILE.axis_center_us,
     except ch7 (index 6) which defaults to 1100 µs (slider low, no buttons).
     Pass positional overrides for channels 0–N.
     """
-    frame = [AXIS_CENTER_US] * len(CHANNEL_MAP)
+    frame = [_PROFILE.axis_center_us] * len(_PROFILE.channel_map)
     frame[6] = 1100   # slider default: physical low = no buttons
     for i, v in enumerate(overrides):
         frame[i] = v
@@ -45,32 +44,32 @@ def _full_frame(*overrides):
 class TestAxisBar(unittest.TestCase):
 
     def test_min_value_all_empty(self):
-        bar = _axis_bar(AXIS_MIN_US)
+        bar = _axis_bar(_PROFILE.axis_min_us)
         self.assertEqual(bar, '[░░░░░░]')
 
     def test_max_value_all_filled(self):
-        bar = _axis_bar(AXIS_MAX_US)
+        bar = _axis_bar(_PROFILE.axis_max_us)
         self.assertEqual(bar, '[██████]')
 
     def test_centre_value_half_filled(self):
         # (1500-1100)/(1900-1100) = 0.5 → int(0.5 * 6) = 3 filled
-        bar = _axis_bar(AXIS_CENTER_US)
+        bar = _axis_bar(_PROFILE.axis_center_us)
         self.assertEqual(bar, '[███░░░]')
 
     def test_custom_width(self):
-        bar = _axis_bar(AXIS_MAX_US, width=4)
+        bar = _axis_bar(_PROFILE.axis_max_us, width=4)
         self.assertEqual(bar, '[████]')
 
     def test_below_min_clipped_to_empty(self):
-        bar = _axis_bar(AXIS_MIN_US - 100)
+        bar = _axis_bar(_PROFILE.axis_min_us - 100)
         self.assertEqual(bar, '[░░░░░░]')
 
     def test_above_max_clipped_to_full(self):
-        bar = _axis_bar(AXIS_MAX_US + 100)
+        bar = _axis_bar(_PROFILE.axis_max_us + 100)
         self.assertEqual(bar, '[██████]')
 
     def test_output_has_fixed_width(self):
-        for us in (AXIS_MIN_US, AXIS_CENTER_US, AXIS_MAX_US, 1300, 1700):
+        for us in (_PROFILE.axis_min_us, _PROFILE.axis_center_us, _PROFILE.axis_max_us, 1300, 1700):
             bar = _axis_bar(us, width=6)
             # '[' + 6 block chars + ']' = 8 chars
             self.assertEqual(len(bar), 8, f'Wrong length for {us} µs: {bar!r}')
@@ -82,25 +81,25 @@ class TestBuildMonitorLine(unittest.TestCase):
 
     def test_axis_at_centre_shows_half_bar(self):
         line = _build_monitor_line(_full_frame())
-        # ch1 (STR) is at AXIS_CENTER_US, no inversion
+        # ch1 (STR) is at _PROFILE.axis_center_us, no inversion
         self.assertIn('STR:[███░░░]', line)
 
     def test_inverted_axis_mirrors_value(self):
-        # ch2 (THR, index 1) is inverted: AXIS_MIN_US raw → AXIS_MAX_US display
-        frame = _full_frame(AXIS_CENTER_US, AXIS_MIN_US)   # ch2 at physical min
+        # ch2 (THR, index 1) is inverted: _PROFILE.axis_min_us raw → _PROFILE.axis_max_us display
+        frame = _full_frame(_PROFILE.axis_center_us, _PROFILE.axis_min_us)   # ch2 at physical min
         line  = _build_monitor_line(frame)
-        # display_us = AXIS_MIN_US + AXIS_MAX_US - AXIS_MIN_US = AXIS_MAX_US → all filled
+        # display_us = _PROFILE.axis_min_us + _PROFILE.axis_max_us - _PROFILE.axis_min_us = _PROFILE.axis_max_us → all filled
         self.assertIn('THR:[██████]', line)
 
     def test_button_released_without_state(self):
         # ch3 (index 2) below threshold → □
-        frame = _full_frame(AXIS_CENTER_US, AXIS_CENTER_US, AXIS_MIN_US)
+        frame = _full_frame(_PROFILE.axis_center_us, _PROFILE.axis_center_us, _PROFILE.axis_min_us)
         line  = _build_monitor_line(frame)
         self.assertIn(' c3:□', line)
 
     def test_button_pressed_without_state(self):
         # ch3 (index 2) above threshold → ■
-        frame = _full_frame(AXIS_CENTER_US, AXIS_CENTER_US, AXIS_MAX_US)
+        frame = _full_frame(_PROFILE.axis_center_us, _PROFILE.axis_center_us, _PROFILE.axis_max_us)
         line  = _build_monitor_line(frame)
         self.assertIn(' c3:■', line)
 
@@ -119,19 +118,19 @@ class TestBuildMonitorLine(unittest.TestCase):
         self.assertIn(' c3:□', line)
 
     def test_slider_low_without_state(self):
-        frame = _full_frame()   # ch7 = 1100 µs (≤ SLIDER_LOW_THRESHOLD=1300)
+        frame = _full_frame()   # ch7 = 1100 µs (≤ _PROFILE.slider_low_threshold_us=1300)
         line  = _build_monitor_line(frame)
         self.assertIn(' c7:LOW', line)
 
     def test_slider_mid_without_state(self):
         frame    = _full_frame()
-        frame[6] = SLIDER_LOW_THRESHOLD + 1   # just above low threshold → MID
+        frame[6] = _PROFILE.slider_low_threshold_us + 1   # just above low threshold → MID
         line     = _build_monitor_line(frame)
         self.assertIn(' c7:MID', line)
 
     def test_slider_hi_without_state(self):
         frame    = _full_frame()
-        frame[6] = SLIDER_HIGH_THRESHOLD + 1   # above high threshold → HI
+        frame[6] = _PROFILE.slider_high_threshold_us + 1   # above high threshold → HI
         line     = _build_monitor_line(frame)
         self.assertIn(' c7:HI ', line)
 

@@ -32,7 +32,7 @@ import time
 import wave
 
 sys.path.insert(0, os.path.dirname(__file__))
-from ppm2hid import discover_ppm_source, AUDIO_SAMPLE_RATE
+from ppm2hid import discover_ppm_source, DEFAULT_AUDIO_SAMPLE_RATE
 
 TESTDATA_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'testdata')
 DEFAULT_RATE  = 192_000

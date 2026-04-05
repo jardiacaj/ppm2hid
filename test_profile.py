@@ -12,16 +12,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(__file__))
-from ppm2hid import (
-    load_profile,
-    Profile,
-    ChannelOutputState,
-    _resolve_code,
-    AXIS_MIN_US, AXIS_MAX_US, AXIS_CENTER_US,
-    AXIS_DEADBAND_US,
-    BUTTON_THRESHOLD_US, BUTTON_HYSTERESIS_US,
-    SLIDER_LOW_THRESHOLD, SLIDER_HIGH_THRESHOLD,
-)
+from ppm2hid import load_profile, Profile, ChannelOutputState, _resolve_code
 
 # Path to the bundled example profile
 ABSIMA_PROFILE = os.path.join(os.path.dirname(__file__), 'profiles', 'absima_cr10p.toml')
@@ -54,16 +45,17 @@ class TestResolvCode(unittest.TestCase):
 
 class TestDefaultProfile(unittest.TestCase):
 
-    def test_default_profile_matches_hardcoded_calibration(self):
+    def test_default_profile_calibration(self):
         p = Profile()
-        self.assertEqual(p.axis_min_us,              AXIS_MIN_US)
-        self.assertEqual(p.axis_max_us,              AXIS_MAX_US)
-        self.assertEqual(p.axis_center_us,           AXIS_CENTER_US)
-        self.assertEqual(p.axis_deadband_us,         AXIS_DEADBAND_US)
-        self.assertEqual(p.button_threshold_us,      BUTTON_THRESHOLD_US)
-        self.assertEqual(p.button_hysteresis_us,     BUTTON_HYSTERESIS_US)
-        self.assertEqual(p.slider_low_threshold_us,  SLIDER_LOW_THRESHOLD)
-        self.assertEqual(p.slider_high_threshold_us, SLIDER_HIGH_THRESHOLD)
+        self.assertEqual(p.axis_min_us,              1_100)
+        self.assertEqual(p.axis_max_us,              1_900)
+        self.assertEqual(p.axis_center_us,           1_500)
+        self.assertEqual(p.axis_deadband_us,         42)
+        self.assertEqual(p.button_threshold_us,      1_500)
+        self.assertEqual(p.button_hysteresis_us,     21)
+        self.assertEqual(p.slider_low_threshold_us,  1_300)
+        self.assertEqual(p.slider_high_threshold_us, 1_700)
+        self.assertEqual(len(p.channel_map),         8)
 
 
 class TestLoadProfileAbsima(unittest.TestCase):
@@ -213,7 +205,7 @@ class TestLoadProfileValidation(unittest.TestCase):
             self.assertEqual(p.axis_min_us, 900)
             self.assertEqual(p.axis_max_us, 2100)
             # Unset fields keep defaults
-            self.assertEqual(p.axis_center_us, AXIS_CENTER_US)
+            self.assertEqual(p.axis_center_us, Profile().axis_center_us)
         finally:
             os.unlink(toml)
 

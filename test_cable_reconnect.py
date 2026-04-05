@@ -20,7 +20,7 @@ Expected outcomes:
   - Frames decoded before and after the gap: at least 60 each (≈2 s at 30 Hz min).
   - No frames during the cable-out period (hysteresis blocks noise).
   - All decoded frames have the expected channel count.
-  - All decoded values stay within [AXIS_MIN_US, AXIS_MAX_US].
+  - All decoded values stay within [_PROFILE.axis_min_us, _PROFILE.axis_max_us].
 """
 
 import os
@@ -30,11 +30,9 @@ import unittest
 import wave
 
 sys.path.insert(0, os.path.dirname(__file__))
-from ppm2hid import (
-    PpmDecoder,
-    CHANNEL_MAP,
-    AXIS_MIN_US, AXIS_MAX_US,
-)
+from ppm2hid import PpmDecoder, Profile
+
+_PROFILE = Profile()
 
 RECORDING_PATH = os.path.join(os.path.dirname(__file__), 'testdata', 'cable_reconnect.wav')
 
@@ -56,7 +54,7 @@ def _load_samples(path):
 
 def _decode_with_indices(samples, sample_rate):
     """Return list of (sample_index, frame) for every complete frame."""
-    decoder = PpmDecoder(max_channels=len(CHANNEL_MAP), sample_rate=sample_rate)
+    decoder = PpmDecoder(max_channels=len(_PROFILE.channel_map), sample_rate=sample_rate)
     results = []
     for idx, s in enumerate(samples):
         frame = decoder.feed(s)
@@ -145,7 +143,7 @@ class TestCableReconnect(unittest.TestCase):
                 len(during), 0,
                 f'{len(during)} phantom frame(s) decoded during cable-out gap '
                 f'(sample {gap_start}–{gap_end}) — '
-                f'AUDIO_HYSTERESIS may need to be raised'
+                f'DEFAULT_AUDIO_HYSTERESIS may need to be raised'
             )
 
     def test_channel_count_consistent(self):
@@ -156,7 +154,7 @@ class TestCableReconnect(unittest.TestCase):
         returns.  We allow one frame within one nominal frame-period of each
         gap edge to have a short count.
         """
-        expected = len(CHANNEL_MAP)
+        expected = len(_PROFILE.channel_map)
         nominal_period = self.sample_rate / 60
         # Build a set of sample indices that are within one frame-period of
         # any gap edge (start or end).
@@ -179,12 +177,12 @@ class TestCableReconnect(unittest.TestCase):
         )
 
     def test_values_in_range(self):
-        """All decoded channel values must lie within [AXIS_MIN_US, AXIS_MAX_US]."""
+        """All decoded channel values must lie within [_PROFILE.axis_min_us, _PROFILE.axis_max_us]."""
         violations = [
             (idx, ch, v)
             for idx, frame in self.indexed_frames
             for ch, v in enumerate(frame)
-            if not (AXIS_MIN_US <= v <= AXIS_MAX_US)
+            if not (_PROFILE.axis_min_us <= v <= _PROFILE.axis_max_us)
         ]
         self.assertFalse(
             violations,

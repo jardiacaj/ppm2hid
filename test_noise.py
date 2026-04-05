@@ -19,7 +19,9 @@ import unittest
 import wave
 
 sys.path.insert(0, os.path.dirname(__file__))
-from ppm2hid import PpmDecoder, CHANNEL_MAP, AUDIO_HYSTERESIS
+from ppm2hid import PpmDecoder, Profile, DEFAULT_AUDIO_HYSTERESIS
+
+_PROFILE = Profile()
 
 RECORDING_PATH = os.path.join(os.path.dirname(__file__), 'testdata', 'noise_tx_off.wav')
 
@@ -59,7 +61,7 @@ class TestNoiseRejection(unittest.TestCase):
         self.assertEqual(
             len(frames), 0,
             f'{len(frames)} phantom frame(s) decoded from left-channel noise — '
-            f'AUDIO_HYSTERESIS={AUDIO_HYSTERESIS} may need to be raised, or '
+            f'DEFAULT_AUDIO_HYSTERESIS={DEFAULT_AUDIO_HYSTERESIS} may need to be raised, or '
             f'the recording was made with the transmitter on',
         )
 

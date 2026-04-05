@@ -23,11 +23,9 @@ import unittest
 import wave
 
 sys.path.insert(0, os.path.dirname(__file__))
-from ppm2hid import (
-    PpmDecoder,
-    CHANNEL_MAP,
-    AXIS_MIN_US, AXIS_MAX_US,
-)
+from ppm2hid import PpmDecoder, Profile
+
+_PROFILE = Profile()
 
 RECORDING_PATH = os.path.join(os.path.dirname(__file__), 'testdata', 'ppm_capture.wav')
 
@@ -54,7 +52,7 @@ def _decode_with_sample_indices(samples, sample_rate):
     Decode all samples through PpmDecoder and return a list of
     (sample_index, frame) for every complete frame decoded.
     """
-    decoder = PpmDecoder(max_channels=len(CHANNEL_MAP), sample_rate=sample_rate,
+    decoder = PpmDecoder(max_channels=len(_PROFILE.channel_map), sample_rate=sample_rate,
                          hysteresis=0)
     results = []
     for idx, sample in enumerate(samples):
@@ -118,7 +116,7 @@ class TestPpmBadCable(unittest.TestCase):
         proportion of partial frames is acceptable — the bad cable can cut the
         signal mid-frame, so the decoder may emit a short frame at drop edges.
         """
-        expected   = len(CHANNEL_MAP)
+        expected   = len(_PROFILE.channel_map)
         partial    = [i for i, f in enumerate(self.frames) if len(f) != expected]
         max_partial = max(5, int(len(self.frames) * 0.10))   # ≤ 10 % partial
         self.assertLessEqual(
@@ -130,11 +128,11 @@ class TestPpmBadCable(unittest.TestCase):
         )
 
     def test_values_in_range(self):
-        """All decoded µs values must lie within [AXIS_MIN_US, AXIS_MAX_US]."""
+        """All decoded µs values must lie within [_PROFILE.axis_min_us, _PROFILE.axis_max_us]."""
         violations = []
         for frame_index, frame in enumerate(self.frames):
             for ch_index, value in enumerate(frame):
-                if not (AXIS_MIN_US <= value <= AXIS_MAX_US):
+                if not (_PROFILE.axis_min_us <= value <= _PROFILE.axis_max_us):
                     violations.append((frame_index, ch_index, value))
         self.assertFalse(
             violations,
@@ -196,8 +194,8 @@ class TestPpmBadCable(unittest.TestCase):
         # (catches both large drops and short interruptions alike)
         gap_threshold = self.nominal_period_samples * 1.5
 
-        expected     = len(CHANNEL_MAP)
-        axis_indices = {i for i, ch in enumerate(CHANNEL_MAP) if ch[0] == 'axis'}
+        expected     = len(_PROFILE.channel_map)
+        axis_indices = {i for i, ch in enumerate(_PROFILE.channel_map) if ch[0] == 'axis'}
 
         # Work only on fully-decoded frames
         full = [
