@@ -131,7 +131,12 @@ def _resolve_code(value):
         raise ValueError(f'unknown input code name: {value!r}')
 
 
-# uinput ioctl numbers
+# uinput ioctl numbers (linux/uinput.h).
+# Before UI_DEV_CREATE the device is configured with a series of ioctls:
+#   UI_SET_EVBIT  – declare which event types the device will produce (EV_KEY, EV_ABS, …)
+#   UI_SET_KEYBIT – for each button/key code, announce it under EV_KEY
+#   UI_SET_ABSBIT – for each axis code, announce it under EV_ABS
+# UI_DEV_CREATE then materialises the device node; UI_DEV_DESTROY tears it down.
 UI_SET_EVBIT   = 0x40045564
 UI_SET_KEYBIT  = 0x40045565
 UI_SET_ABSBIT  = 0x40045567
@@ -139,14 +144,18 @@ UI_DEV_CREATE  = 0x5501
 UI_DEV_DESTROY = 0x5502
 
 UINPUT_MAX_NAME_SIZE = 80
-ABS_CNT = 64
+ABS_CNT = 64   # kernel ABS_CNT — total number of absolute axis slots in uinput_user_dev
 
 # USB vendor / product IDs reported by the virtual uinput joystick device.
 # VID 0x1209 is the pid.codes community open-source vendor ID (not a real USB vendor).
 _UINPUT_VENDOR  = 0x1209
 _UINPUT_PRODUCT = 0x2641
 
-# input_event layout on 64-bit Linux: timeval(16) + type/code/value(8) = 24 bytes
+# input_event struct layout on 64-bit Linux (linux/input.h):
+#   timeval:  tv_sec (q=int64) + tv_usec (q=int64) = 16 bytes  [kernel fills these in]
+#   type:     H=uint16  — EV_KEY, EV_ABS, EV_SYN, …
+#   code:     H=uint16  — BTN_*, ABS_*, SYN_REPORT, …
+#   value:    i=int32   — axis position, button 0/1, or SYN_REPORT 0
 INPUT_EVENT_STRUCT = 'qqHHi'
 
 
@@ -255,7 +264,26 @@ class PpmDecoder:
         return self._process_completed_pulse(completed_level, completed_length)
 
     def _process_completed_pulse(self, pulse_type, pulse_length_samples):
-        """Evaluate a just-completed pulse and update decoder state."""
+        """
+        Evaluate a just-completed pulse and update decoder state.
+
+        PPM encoding on this transmitter (positive/high-active):
+          Each channel occupies one HIGH+LOW pair.  The channel value is encoded
+          in the *combined* duration (HIGH + LOW), not in the HIGH or LOW alone.
+          Typical values: HIGH ≈ 700–1500 µs, LOW ≈ 416 µs (constant separator),
+          total ≈ 1100–1900 µs.
+
+        Two-phase measurement:
+          1. HIGH pulse arrives → stored in self._pending_high (value not yet known).
+          2. The following LOW pulse arrives → total = pending_high + LOW = channel µs.
+          Between steps the decoder is "pending"; if anything interrupts the pair
+          (another HIGH, an out-of-range pulse, etc.) pending_high is discarded.
+
+        Sync detection:
+          A long HIGH (> sync_min, typically >3 ms) is the frame boundary.  Frames
+          received before the first sync are discarded (self._synced is False) because
+          the decoder does not yet know where in the sequence it joined.
+        """
 
         if pulse_type == 'high':
             if self._sync_min <= pulse_length_samples <= self._sync_max:
@@ -285,6 +313,7 @@ class PpmDecoder:
 
             elif (self._synced
                   and self._ch_min <= pulse_length_samples <= self._ch_max):
+                # Normal channel HIGH — store and wait for the LOW separator
                 self._pending_high = pulse_length_samples
                 if self._debug:
                     self._dbg_h_pending = (len(self._frame_channels) + 1,
@@ -297,6 +326,8 @@ class PpmDecoder:
 
         elif pulse_type == 'low':
             if self._pending_high is not None and self._synced:
+                # Second phase: add the LOW separator to complete the channel measurement.
+                # Both halves must together fall within the expected channel duration range.
                 total_samples = self._pending_high + pulse_length_samples
                 total_us      = self._smp_to_us(total_samples)
 
@@ -393,9 +424,11 @@ class TerminalUI:
             return   # terminal too small – degrade gracefully
 
         self._initialized = True
-        # Confine automatic scrolling to the log area only
+        # \033[top;bot r  — DECSTBM: confine terminal scrolling to rows top..bot.
+        # Subsequent newlines in that region scroll only within it; the fixed status
+        # rows below are never touched by normal text output.
         sys.stdout.write(f'\033[1;{log_rows}r')
-        # Clear the fixed status area
+        # Clear the fixed status area (move to each row; \033[2K = erase whole line)
         for i in range(fixed_rows):
             sys.stdout.write(f'\033[{log_rows + 1 + i};1H\033[2K')
         # Park cursor at the bottom of the log area ready for the first log line
@@ -416,11 +449,12 @@ class TerminalUI:
         if not self._initialized:
             return
         log_rows = self._height - self._fixed_rows
-        out = ['\0337']   # DEC save cursor position
+        out = ['\0337']   # ESC 7  — DEC save cursor (position + attributes)
         for i, line in enumerate(lines[:self._fixed_rows]):
             row = log_rows + 1 + i
+            # \033[row;1H — absolute cursor position; \033[K — erase to end of line
             out.append(f'\033[{row};1H\r{line:<79}\033[K')
-        out.append('\0338')   # DEC restore cursor position
+        out.append('\0338')   # ESC 8  — DEC restore cursor (return to log area)
         sys.stdout.write(''.join(out))
         sys.stdout.flush()
 
@@ -428,6 +462,7 @@ class TerminalUI:
         """Reset scroll region and move cursor below the status area."""
         if not self._initialized:
             return
+        # \033[r — DECSTBM with no args resets scroll region to full screen
         sys.stdout.write(f'\033[r\033[{self._height};1H\n')
         sys.stdout.flush()
         self._initialized = False
@@ -495,6 +530,14 @@ def open_uinput_joystick(profile=None):
         absflat[abs_code] = 50             # ~±50 µs flat zone snaps stick-at-rest to zero
 
     device_name     = b'ppm2joy\x00'.ljust(UINPUT_MAX_NAME_SIZE, b'\x00')
+    # Pack the kernel uinput_user_dev structure (linux/uinput.h):
+    #   char  name[UINPUT_MAX_NAME_SIZE]   — device display name
+    #   __u16 id.bustype, id.vendor, id.product, id.version
+    #   __u32 ff_effects_max               — 0 = no force-feedback
+    #   __s32 absmax[ABS_CNT]              — per-axis maximum values
+    #   __s32 absmin[ABS_CNT]              — per-axis minimum values
+    #   __s32 absfuzz[ABS_CNT]             — kernel-level noise filter (disabled; we do SW deadband)
+    #   __s32 absflat[ABS_CNT]             — kernel flat zone at centre
     uinput_user_dev = struct.pack(
         f'{UINPUT_MAX_NAME_SIZE}s HHHH I {ABS_CNT}i {ABS_CNT}i {ABS_CNT}i {ABS_CNT}i',
         device_name, BUS_USB, _UINPUT_VENDOR, _UINPUT_PRODUCT, 1, 0,
@@ -522,11 +565,13 @@ def destroy_uinput_joystick(fd):
 
 
 def _write_input_event(fd, event_type, event_code, event_value):
+    # Timestamps (tv_sec, tv_usec) are passed as 0; the kernel overwrites them.
     raw = struct.pack(INPUT_EVENT_STRUCT, 0, 0, event_type, event_code, event_value)
     os.write(fd, raw)
 
 
 def _flush_events(fd):
+    # EV_SYN / SYN_REPORT tells the kernel to deliver all buffered events atomically.
     _write_input_event(fd, EV_SYN, SYN_REPORT, 0)
 
 
@@ -550,7 +595,7 @@ class ChannelOutputState:
             elif ch[0] == 'three_pos':
                 btn_codes.add(ch[1])
                 btn_codes.add(ch[2])
-        self.axis_values   = {code: 1_500 for code in abs_codes}
+        self.axis_values   = {code: 1_500 for code in abs_codes}   # 1500 µs = centre
         self.button_states = {code: False for code in btn_codes}
 
 
@@ -1375,8 +1420,8 @@ def main():
     if real_time_file:
         ui.log('Real-time playback enabled (--no-realtime to disable)')
 
-    AUDIO_CHUNK_BYTES  = 1024 * 4   # 1024 stereo frames × 4 bytes each
-    chunk_duration_s   = AUDIO_CHUNK_BYTES / 4 / actual_rate
+    AUDIO_CHUNK_BYTES  = 1024 * 4   # 1024 stereo frames × 4 bytes/frame (2ch × 2 bytes/sample)
+    chunk_duration_s   = AUDIO_CHUNK_BYTES / 4 / actual_rate   # wall-clock time per chunk
     next_chunk_deadline = time.monotonic()
 
     try:
@@ -1419,6 +1464,10 @@ def main():
                     in_signal_gap = False
 
                 # ── Channel count stability locking ───────────────────────────
+                # The decoder may emit short frames at start-up or after signal gaps
+                # (sync seen but fewer channels received).  Require CHANNEL_LOCK_FRAMES
+                # consecutive frames with the same count before accepting that count;
+                # then skip any frame that deviates from it.
                 ch_count = len(completed_frame)
 
                 if expected_ch_count is None:
