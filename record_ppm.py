@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 """
-record_ppm.py – Record a raw PPM audio capture for use as test data.
+record_ppm.py – Record a PPM audio capture for use as test data.
 
-Captures stereo s16le audio from the PPM source and writes it to a raw file.
-The resulting file can be replayed with:
+Captures stereo s16le audio from the PPM source and writes a WAV file.
+The sample rate is stored in the file header, so replay does not require
+--rate:
 
-    python ppm2hid.py --file testdata/ppm_<timestamp>_<rate>k.raw --rate <rate>
+    python ppm2hid.py --file testdata/ppm_<timestamp>_192k.wav
 
-By default the file is saved to testdata/ with an auto-generated name that
-encodes the timestamp and sample rate so recordings are easy to identify.
+Use --name to write directly to a well-known test-data path:
+
+    python record_ppm.py --name noise_tx_off --duration 3
+    → testdata/noise_tx_off.wav
 
 Usage examples:
     python record_ppm.py                         # auto-detect source, 192 kHz
     python record_ppm.py --rate 48000            # lower sample rate
     python record_ppm.py --duration 15           # stop after 15 seconds
-    python record_ppm.py -o my_recording.raw     # custom output path
+    python record_ppm.py --name ch01_sweep --duration 3
+    python record_ppm.py -o my_recording.wav     # custom output path
     python record_ppm.py --device alsa_input.X   # skip auto-detect
 """
 
@@ -25,6 +29,7 @@ import signal
 import subprocess
 import sys
 import time
+import wave
 
 sys.path.insert(0, os.path.dirname(__file__))
 from ppm2hid import discover_ppm_source, AUDIO_SAMPLE_RATE
@@ -36,10 +41,10 @@ CHUNK_BYTES   = 8192
 
 def main():
     ap = argparse.ArgumentParser(
-        description='Record raw PPM audio for use as test data',
+        description='Record PPM audio to a WAV file for use as test data',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='The output file can be replayed with:\n'
-               '  python ppm2hid.py --file <path> --rate <rate>',
+               '  python ppm2hid.py --file <path>',
     )
     ap.add_argument(
         '-d', '--device', default=None,
@@ -55,8 +60,12 @@ def main():
         help='Stop automatically after this many seconds (default: Ctrl-C)',
     )
     ap.add_argument(
+        '--name', default=None, metavar='NAME',
+        help='Write to testdata/NAME.wav (convenient for named test recordings)',
+    )
+    ap.add_argument(
         '-o', '--output', default=None, metavar='PATH',
-        help='Output file path (default: testdata/ppm_YYYYMMDD_HHMMSS_<rate>k.raw)',
+        help='Output file path (default: testdata/ppm_YYYYMMDD_HHMMSS_<rate>k.wav)',
     )
     args = ap.parse_args()
 
@@ -66,19 +75,25 @@ def main():
         if args.device is None:
             sys.exit(
                 'error: no PPM source detected automatically\n'
-                '       specify one with --device (see: pactl list sources short)'
+                '       specify one with --device (see: pactl list sources short)\n'
+                '       note: auto-detect requires the transmitter to be ON'
             )
 
     # Resolve output path
-    if args.output is None:
+    if args.output is not None:
+        output_path = args.output
+    elif args.name is not None:
+        os.makedirs(TESTDATA_DIR, exist_ok=True)
+        output_path = os.path.join(TESTDATA_DIR, f'{args.name}.wav')
+    else:
         os.makedirs(TESTDATA_DIR, exist_ok=True)
         stamp    = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         rate_tag = f'{args.rate // 1000}k'
-        args.output = os.path.join(TESTDATA_DIR, f'ppm_{stamp}_{rate_tag}.raw')
+        output_path = os.path.join(TESTDATA_DIR, f'ppm_{stamp}_{rate_tag}.wav')
 
     print(f'Device  : {args.device}')
-    print(f'Rate    : {args.rate} Hz  (s16le stereo)')
-    print(f'Output  : {args.output}')
+    print(f'Rate    : {args.rate} Hz  (s16le stereo WAV)')
+    print(f'Output  : {output_path}')
     if args.duration:
         print(f'Duration: {args.duration:.1f} s')
     print('Recording … Ctrl-C to stop\n')
@@ -105,20 +120,24 @@ def main():
         proc.wait()
         elapsed  = time.monotonic() - start_time
         mb       = bytes_written / 1_048_576
-        print(f'\n\nSaved {elapsed:.1f} s  ({mb:.1f} MB)  →  {args.output}')
+        print(f'\n\nSaved {elapsed:.1f} s  ({mb:.1f} MB)  →  {output_path}')
         print(f'\nReplay with:')
-        print(f'  python ppm2hid.py --file {args.output} --rate {args.rate}')
+        print(f'  python ppm2hid.py --file {output_path}')
         sys.exit(0)
 
     signal.signal(signal.SIGINT,  finish)
     signal.signal(signal.SIGTERM, finish)
 
-    with open(args.output, 'wb') as out:
+    with wave.open(output_path, 'wb') as wav_out:
+        wav_out.setnchannels(2)
+        wav_out.setsampwidth(2)
+        wav_out.setframerate(args.rate)
+
         while True:
             chunk = proc.stdout.read(CHUNK_BYTES)
             if not chunk:
                 break
-            out.write(chunk)
+            wav_out.writeframes(chunk)
             bytes_written += len(chunk)
 
             elapsed = time.monotonic() - start_time
