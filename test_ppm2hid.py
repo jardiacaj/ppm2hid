@@ -24,6 +24,7 @@ import os
 import struct
 import sys
 import unittest
+import wave
 
 sys.path.insert(0, os.path.dirname(__file__))
 from ppm2hid import (
@@ -36,9 +37,8 @@ from ppm2hid import (
     AXIS_DEADBAND_US,
 )
 
-RECORDING_PATH        = os.path.join(os.path.dirname(__file__), 'testdata', 'ppm_capture_192k.raw')
-RECORDING_SAMPLE_RATE = 192_000
-RECORDING_DURATION_S  = 15
+RECORDING_PATH       = os.path.join(os.path.dirname(__file__), 'testdata', 'ppm_capture_192k.wav')
+RECORDING_DURATION_S = 15
 
 # Channels confirmed pressed in this recording (ch3=index 2, ch4=index 3).
 # ch8 (index 7) was not pressed — excluded from the press/release assertion.
@@ -48,19 +48,28 @@ _EXERCISED_BUTTON_INDICES = {2, 3}
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _load_left_channel_samples(path):
-    """Read a raw s16le stereo file and return the left-channel samples."""
-    with open(path, 'rb') as f:
-        raw = f.read()
-    return [
+    """
+    Read a .wav or raw s16le stereo file and return (left-channel samples, sample_rate).
+    For .wav the sample rate is read from the file header.
+    """
+    if path.lower().endswith('.wav'):
+        with wave.open(path, 'rb') as wf:
+            raw         = wf.readframes(wf.getnframes())
+            sample_rate = wf.getframerate()
+    else:
+        with open(path, 'rb') as f:
+            raw = f.read()
+        sample_rate = AUDIO_SAMPLE_RATE
+    samples = [
         struct.unpack_from('<h', raw, offset)[0]
         for offset in range(0, len(raw) - 3, 4)
     ]
+    return samples, sample_rate
 
 
-def _decode_all_frames(samples):
+def _decode_all_frames(samples, sample_rate):
     """Run every sample through PpmDecoder and collect complete frames."""
-    decoder = PpmDecoder(max_channels=len(CHANNEL_MAP),
-                         sample_rate=RECORDING_SAMPLE_RATE)
+    decoder = PpmDecoder(max_channels=len(CHANNEL_MAP), sample_rate=sample_rate)
     frames = []
     for sample in samples:
         result = decoder.feed(sample)
@@ -88,9 +97,9 @@ class TestPpmDecoder(unittest.TestCase):
                 f"--latency-msec=20 {RECORDING_PATH}"
             )
 
-        samples = _load_left_channel_samples(RECORDING_PATH)
-        cls.actual_duration = len(samples) / RECORDING_SAMPLE_RATE
-        cls.frames = _decode_all_frames(samples)
+        samples, sample_rate = _load_left_channel_samples(RECORDING_PATH)
+        cls.actual_duration  = len(samples) / sample_rate
+        cls.frames           = _decode_all_frames(samples, sample_rate)
 
         if not cls.frames:
             raise unittest.SkipTest(

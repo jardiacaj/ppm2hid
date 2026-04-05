@@ -32,6 +32,7 @@ import struct
 import subprocess
 import sys
 import time
+import wave
 
 
 # MARK: - Linux input subsystem constants
@@ -628,6 +629,59 @@ def restore_alsa_input_sources(alsa_card=0):
         _amixer_cset_numid(alsa_card, numid, value)
 
 
+# MARK: - Audio file helpers (WAV + raw)
+
+def _validate_wav(wf):
+    """Raise wave.Error if wf is not s16le stereo."""
+    if wf.getnchannels() != 2:
+        raise wave.Error(f'expected stereo (2 ch), got {wf.getnchannels()}')
+    if wf.getsampwidth() != 2:
+        raise wave.Error(f'expected 16-bit samples, got {wf.getsampwidth() * 8}-bit')
+
+
+class _WavSource:
+    """Wraps wave.Wave_read to expose a .read(n_bytes) interface."""
+
+    def __init__(self, wf):
+        self._wf = wf
+        self._bytes_per_frame = wf.getnchannels() * wf.getsampwidth()
+
+    @property
+    def sample_rate(self):
+        return self._wf.getframerate()
+
+    def read(self, n_bytes):
+        n_frames = max(1, n_bytes // self._bytes_per_frame)
+        return self._wf.readframes(n_frames)
+
+    def close(self):
+        self._wf.close()
+
+
+def open_audio_file(path, hint_rate=AUDIO_SAMPLE_RATE):
+    """
+    Open a .wav or raw s16le stereo audio file.
+    Returns (source, actual_sample_rate).
+    For .wav files the sample rate is read from the file header; hint_rate is ignored.
+    """
+    if path.lower().endswith('.wav'):
+        wf = wave.open(path, 'rb')
+        _validate_wav(wf)
+        return _WavSource(wf), wf.getframerate()
+    return open(path, 'rb'), hint_rate
+
+
+def _get_file_sample_rate(path, hint_rate=AUDIO_SAMPLE_RATE):
+    """Return the sample rate from a .wav header, or hint_rate for raw files."""
+    if path.lower().endswith('.wav'):
+        try:
+            with wave.open(path, 'rb') as wf:
+                return wf.getframerate()
+        except (wave.Error, OSError):
+            pass
+    return hint_rate
+
+
 # MARK: - Audio capture via PipeWire/PulseAudio
 
 def start_audio_capture(pipewire_source_name, sample_rate=AUDIO_SAMPLE_RATE):
@@ -741,16 +795,22 @@ def probe_source_for_ppm(source_name, sample_rate=AUDIO_SAMPLE_RATE,
 def probe_file_for_ppm(file_path, sample_rate=AUDIO_SAMPLE_RATE,
                         threshold=AUDIO_THRESHOLD, duration_s=0.5):
     """
-    Read the first *duration_s* seconds of a raw s16le stereo file and return
-    the channel index (0 = left, 1 = right) where a valid PPM frame is detected,
-    or None if no PPM signal is found on either channel.
+    Read the first *duration_s* seconds of a .wav or raw s16le stereo file and
+    return (channel, invert) where a valid PPM frame is detected, or None if no
+    PPM signal is found.  For .wav files the sample rate is read from the header.
     """
-    probe_bytes = int(duration_s * sample_rate * 4)
-    probe_bytes = (probe_bytes + 3) & ~3
     try:
-        with open(file_path, 'rb') as f:
-            raw_audio = f.read(probe_bytes)
-    except OSError:
+        if file_path.lower().endswith('.wav'):
+            with wave.open(file_path, 'rb') as wf:
+                _validate_wav(wf)
+                sample_rate = wf.getframerate()
+                raw_audio   = wf.readframes(int(duration_s * sample_rate))
+        else:
+            probe_bytes = int(duration_s * sample_rate * 4)
+            probe_bytes = (probe_bytes + 3) & ~3
+            with open(file_path, 'rb') as f:
+                raw_audio = f.read(probe_bytes)
+    except (wave.Error, OSError):
         return None
     if len(raw_audio) < 8:
         return None
@@ -988,11 +1048,14 @@ def main():
     audio_capture_proc = None
     audio_file         = None
 
+    actual_rate = args.rate   # overridden below for .wav files
+
     if args.file:
         if not os.path.exists(args.file):
             sys.exit(f'error: file not found: {args.file}')
+        actual_rate = _get_file_sample_rate(args.file, args.rate)
         print(f'Probing {args.file} for PPM signal … ', end='', flush=True)
-        result = probe_file_for_ppm(args.file, args.rate, args.threshold)
+        result = probe_file_for_ppm(args.file, actual_rate, args.threshold)
         if result is None:
             sys.exit(
                 'no PPM signal found\n'
@@ -1063,17 +1126,17 @@ def main():
     channel_name = 'left' if audio_channel == 0 else 'right'
     inv_note     = ', inverted' if audio_invert else ''
     ui.log(f'{"File" if args.file else "Capturing from"}: {audio_source_label}  '
-           f'({args.rate} Hz, {channel_name} channel{inv_note})')
+           f'({actual_rate} Hz, {channel_name} channel{inv_note})')
 
     if args.file:
-        audio_file   = open(args.file, 'rb')
+        audio_file, actual_rate = open_audio_file(args.file, actual_rate)
         audio_source = audio_file
     else:
-        audio_capture_proc = start_audio_capture(args.device, args.rate)
+        audio_capture_proc = start_audio_capture(args.device, actual_rate)
         audio_source       = audio_capture_proc.stdout
 
     ppm_decoder    = PpmDecoder(max_channels=PPM_DECODE_MAX_CHANNELS, debug=args.debug,
-                               sample_rate=args.rate, threshold=args.threshold)
+                               sample_rate=actual_rate, threshold=args.threshold)
     output_state   = ChannelOutputState()
     frames_decoded = 0
     last_frame_time    = None
@@ -1093,7 +1156,7 @@ def main():
         ui.log('Real-time playback enabled (--no-realtime to disable)')
 
     AUDIO_CHUNK_BYTES  = 1024 * 4   # 1024 stereo frames × 4 bytes each
-    chunk_duration_s   = AUDIO_CHUNK_BYTES / 4 / args.rate
+    chunk_duration_s   = AUDIO_CHUNK_BYTES / 4 / actual_rate
     next_chunk_deadline = time.monotonic()
 
     try:
