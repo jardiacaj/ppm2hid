@@ -67,6 +67,70 @@ BTN_SW_CH8  = 0x124   # ch8  momentary switch → joystick button 4
 BTN_SW_CH9  = 0x125   # ch9  (reserved – not yet in CHANNEL_MAP)
 BTN_SW_CH10 = 0x126   # ch10 (reserved – not yet in CHANNEL_MAP)
 
+# Registry of kernel input event code names → integer values.
+# Used by load_profile() to resolve names in TOML [[channel]] entries.
+# Raw integers are also accepted wherever a code name is expected.
+_INPUT_CODE_NAMES: dict = {
+    # Absolute axes (EV_ABS)
+    'ABS_X':        0x00,
+    'ABS_Y':        0x01,
+    'ABS_Z':        0x02,
+    'ABS_RX':       0x03,
+    'ABS_RY':       0x04,
+    'ABS_RZ':       0x05,
+    'ABS_THROTTLE': 0x06,
+    'ABS_RUDDER':   0x07,
+    'ABS_WHEEL':    0x08,
+    'ABS_GAS':      0x09,
+    'ABS_BRAKE':    0x0a,
+    # BTN_JOYSTICK range (0x120–0x12f) — required for /dev/input/js* creation
+    'BTN_TRIGGER': 0x120,
+    'BTN_THUMB':   0x121,
+    'BTN_THUMB2':  0x122,
+    'BTN_TOP':     0x123,
+    'BTN_TOP2':    0x124,
+    'BTN_PINKIE':  0x125,
+    'BTN_BASE':    0x126,
+    'BTN_BASE2':   0x127,
+    'BTN_BASE3':   0x128,
+    'BTN_BASE4':   0x129,
+    'BTN_BASE5':   0x12a,
+    'BTN_BASE6':   0x12b,
+    'BTN_DEAD':    0x12f,
+    # BTN_GAMEPAD range (0x130–0x13e) — Xbox-style names
+    'BTN_SOUTH':   0x130,   # A
+    'BTN_A':       0x130,
+    'BTN_EAST':    0x131,   # B
+    'BTN_B':       0x131,
+    'BTN_NORTH':   0x133,   # Y
+    'BTN_Y':       0x133,
+    'BTN_WEST':    0x134,   # X
+    'BTN_X':       0x134,
+    'BTN_TL':      0x136,   # LB (left bumper)
+    'BTN_TR':      0x137,   # RB (right bumper)
+    'BTN_TL2':     0x138,   # LT (left trigger)
+    'BTN_TR2':     0x139,   # RT (right trigger)
+    'BTN_SELECT':  0x13a,
+    'BTN_START':   0x13b,
+    'BTN_MODE':    0x13c,
+    'BTN_THUMBL':  0x13d,   # L3
+    'BTN_THUMBR':  0x13e,   # R3
+}
+
+
+def _resolve_code(value):
+    """
+    Resolve an input event code name (str) or raw integer to its integer value.
+    Raises ValueError for unknown string names.
+    """
+    if isinstance(value, int):
+        return value
+    try:
+        return _INPUT_CODE_NAMES[value]
+    except KeyError:
+        raise ValueError(f'unknown input code name: {value!r}')
+
+
 # uinput ioctl numbers
 UI_SET_EVBIT   = 0x40045564
 UI_SET_KEYBIT  = 0x40045565
@@ -194,17 +258,19 @@ class PpmDecoder:
     """
 
     def __init__(self, max_channels=10, debug=False,
-                 sample_rate=AUDIO_SAMPLE_RATE, threshold=AUDIO_THRESHOLD):
+                 sample_rate=AUDIO_SAMPLE_RATE, threshold=AUDIO_THRESHOLD,
+                 sync_min_us=3_000, sync_max_us=50_000,
+                 channel_min_us=500, channel_max_us=2_100):
         self.max_channels    = max_channels
         self._debug          = debug
         self._sample_rate    = sample_rate
         self._threshold      = threshold
         # Timing thresholds in samples, derived from sample_rate so the decoder
         # works correctly at 48 kHz, 96 kHz, 192 kHz, etc.
-        self._sync_min  = sample_rate * 3_000  // 1_000_000
-        self._sync_max  = sample_rate * 50_000 // 1_000_000
-        self._ch_min    = sample_rate * 500    // 1_000_000
-        self._ch_max    = sample_rate * 2_100  // 1_000_000
+        self._sync_min  = sample_rate * sync_min_us    // 1_000_000
+        self._sync_max  = sample_rate * sync_max_us    // 1_000_000
+        self._ch_min    = sample_rate * channel_min_us // 1_000_000
+        self._ch_max    = sample_rate * channel_max_us // 1_000_000
         self._current_level  = None
         self._run_length     = 0
         self._synced         = False
@@ -434,20 +500,42 @@ class TerminalUI:
 
 # MARK: - uinput device management
 
-def open_uinput_joystick():
+def open_uinput_joystick(profile=None):
     """
     Create a virtual joystick via /dev/uinput.
-    Registers every axis and button code declared in CHANNEL_MAP.
+    Registers every axis and button code declared in the profile's channel map
+    (or the module-level CHANNEL_MAP when profile is None).
     Returns the open file descriptor.
     """
+    cm       = profile.channel_map if profile is not None else CHANNEL_MAP
+    axis_min = profile.axis_min_us if profile is not None else AXIS_MIN_US
+    axis_max = profile.axis_max_us if profile is not None else AXIS_MAX_US
+
+    all_abs = set()
+    all_btn = set()
+    for ch in cm:
+        if ch is None:
+            continue
+        if ch[0] == 'axis':
+            all_abs.add(ch[1])
+        elif ch[0] == 'button':
+            all_btn.add(ch[1])
+        elif ch[0] == 'three_pos':
+            all_btn.add(ch[1])
+            all_btn.add(ch[2])
+
+    if not any(0x120 <= c <= 0x12f for c in all_btn):
+        print('Note: no BTN_JOYSTICK code in profile — '
+              'device will be evdev-only (no /dev/input/js*)')
+
     fd = os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK)
 
     fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)
-    for btn_code in sorted(_ALL_BTN_CODES):
+    for btn_code in sorted(all_btn):
         fcntl.ioctl(fd, UI_SET_KEYBIT, btn_code)
 
     fcntl.ioctl(fd, UI_SET_EVBIT, EV_ABS)
-    for abs_code in sorted(_ALL_ABS_CODES):
+    for abs_code in sorted(all_abs):
         fcntl.ioctl(fd, UI_SET_ABSBIT, abs_code)
 
     absmax  = [0] * ABS_CNT
@@ -455,9 +543,9 @@ def open_uinput_joystick():
     absfuzz = [0] * ABS_CNT
     absflat = [0] * ABS_CNT
 
-    for abs_code in _ALL_ABS_CODES:
-        absmax[abs_code]  = AXIS_MAX_US
-        absmin[abs_code]  = AXIS_MIN_US
+    for abs_code in all_abs:
+        absmax[abs_code]  = axis_max
+        absmin[abs_code]  = axis_min
         absfuzz[abs_code] = 0              # kernel fuzz disabled; software deadband handles filtering
         absflat[abs_code] = 50             # ~±50 µs flat zone snaps stick-at-rest to zero
 
@@ -473,7 +561,7 @@ def open_uinput_joystick():
     time.sleep(0.1)
     # Send initial "released" state for every button so the kernel's state bitmap
     # matches ChannelOutputState's initial state from the first frame onward.
-    for btn_code in sorted(_ALL_BTN_CODES):
+    for btn_code in sorted(all_btn):
         _write_input_event(fd, EV_KEY, btn_code, 0)
     _flush_events(fd)
     return fd
@@ -502,12 +590,25 @@ def _flush_events(fd):
 class ChannelOutputState:
     """Tracks last-emitted values to apply deadband and avoid redundant events."""
 
-    def __init__(self):
-        self.axis_values   = {code: AXIS_CENTER_US for code in _ALL_ABS_CODES}
-        self.button_states = {code: False           for code in _ALL_BTN_CODES}
+    def __init__(self, channel_map=None):
+        cm = channel_map if channel_map is not None else CHANNEL_MAP
+        abs_codes = set()
+        btn_codes = set()
+        for ch in cm:
+            if ch is None:
+                continue
+            if ch[0] == 'axis':
+                abs_codes.add(ch[1])
+            elif ch[0] == 'button':
+                btn_codes.add(ch[1])
+            elif ch[0] == 'three_pos':
+                btn_codes.add(ch[1])
+                btn_codes.add(ch[2])
+        self.axis_values   = {code: AXIS_CENTER_US for code in abs_codes}
+        self.button_states = {code: False           for code in btn_codes}
 
 
-def emit_channel_events(fd, state, ppm_frame):
+def emit_channel_events(fd, state, ppm_frame, profile=None):
     """
     Convert a decoded PPM frame into uinput events and flush with EV_SYN.
 
@@ -517,11 +618,22 @@ def emit_channel_events(fd, state, ppm_frame):
     Returns a list of (channel_label, pressed) for every button state transition
     that occurred this frame — used by the caller to log button events.
     """
+    cm            = profile.channel_map              if profile is not None else CHANNEL_MAP
+    axis_min      = profile.axis_min_us              if profile is not None else AXIS_MIN_US
+    axis_max      = profile.axis_max_us              if profile is not None else AXIS_MAX_US
+    deadband      = profile.axis_deadband_us         if profile is not None else AXIS_DEADBAND_US
+    btn_threshold = profile.button_threshold_us      if profile is not None else BUTTON_THRESHOLD_US
+    btn_hysteresis = profile.button_hysteresis_us    if profile is not None else BUTTON_HYSTERESIS_US
+    sl_lo         = profile.slider_low_threshold_us  if profile is not None else SLIDER_LOW_THRESHOLD
+    sl_hi         = profile.slider_high_threshold_us if profile is not None else SLIDER_HIGH_THRESHOLD
+
     transitions = []
 
-    for channel_index, channel_def in enumerate(CHANNEL_MAP):
+    for channel_index, channel_def in enumerate(cm):
         if channel_index >= len(ppm_frame):
             break
+        if channel_def is None:
+            continue
 
         raw_us       = ppm_frame[channel_index]
         channel_type = channel_def[0]
@@ -529,8 +641,8 @@ def emit_channel_events(fd, state, ppm_frame):
         if channel_type == 'axis':
             abs_code = channel_def[1]
             invert   = len(channel_def) > 2 and channel_def[2]
-            value_us = (AXIS_MIN_US + AXIS_MAX_US - raw_us) if invert else raw_us
-            if abs(value_us - state.axis_values[abs_code]) >= AXIS_DEADBAND_US:
+            value_us = (axis_min + axis_max - raw_us) if invert else raw_us
+            if abs(value_us - state.axis_values[abs_code]) >= deadband:
                 state.axis_values[abs_code] = value_us
                 _write_input_event(fd, EV_ABS, abs_code, value_us)
 
@@ -538,8 +650,8 @@ def emit_channel_events(fd, state, ppm_frame):
             btn_code = channel_def[1]
             # Hysteresis: raise threshold to press, lower threshold to release.
             # Prevents 1-sample jitter near 1500 µs from toggling the button.
-            hys = BUTTON_HYSTERESIS_US if state.button_states[btn_code] else -BUTTON_HYSTERESIS_US
-            pressed = raw_us > BUTTON_THRESHOLD_US - hys
+            hys = btn_hysteresis if state.button_states[btn_code] else -btn_hysteresis
+            pressed = raw_us > btn_threshold - hys
             if pressed != state.button_states[btn_code]:
                 state.button_states[btn_code] = pressed
                 _write_input_event(fd, EV_KEY, btn_code, int(pressed))
@@ -548,11 +660,11 @@ def emit_channel_events(fd, state, ppm_frame):
         elif channel_type == 'three_pos':
             low_btn_code, high_btn_code = channel_def[1], channel_def[2]
             # Hysteresis applied to each slider threshold independently.
-            lo_hys = BUTTON_HYSTERESIS_US if state.button_states[low_btn_code]  else -BUTTON_HYSTERESIS_US
-            hi_hys = BUTTON_HYSTERESIS_US if state.button_states[high_btn_code] else -BUTTON_HYSTERESIS_US
-            # low (~1100 µs) → 0 buttons; mid (~1500) → BTN_SL_LO; high (~1900) → both
-            low_pressed  = raw_us > SLIDER_LOW_THRESHOLD  - lo_hys
-            high_pressed = raw_us > SLIDER_HIGH_THRESHOLD - hi_hys
+            lo_hys = btn_hysteresis if state.button_states[low_btn_code]  else -btn_hysteresis
+            hi_hys = btn_hysteresis if state.button_states[high_btn_code] else -btn_hysteresis
+            # low (~1100 µs) → 0 buttons; mid (~1500) → low button; high (~1900) → both
+            low_pressed  = raw_us > sl_lo - lo_hys
+            high_pressed = raw_us > sl_hi - hi_hys
             for btn_code, pressed in ((low_btn_code, low_pressed),
                                       (high_btn_code, high_pressed)):
                 if pressed != state.button_states[btn_code]:
@@ -860,15 +972,117 @@ def discover_ppm_source(sample_rate=AUDIO_SAMPLE_RATE, threshold=AUDIO_THRESHOLD
 
 # MARK: - Display helpers
 
-def _axis_bar(value_us, width=6):
-    """Fixed-width ASCII bar showing position within [AXIS_MIN_US, AXIS_MAX_US]."""
-    fraction = (value_us - AXIS_MIN_US) / (AXIS_MAX_US - AXIS_MIN_US)
+def _axis_bar(value_us, width=6, axis_min=AXIS_MIN_US, axis_max=AXIS_MAX_US):
+    """Fixed-width ASCII bar showing position within [axis_min, axis_max]."""
+    fraction = (value_us - axis_min) / (axis_max - axis_min)
     filled   = int(max(0.0, min(1.0, fraction)) * width)
     return '[' + '█' * filled + '░' * (width - filled) + ']'
 
 _MONITOR_LABELS = ['STR', 'THR', ' c3', ' c4', ' RX', ' RY', ' c7', ' c8', ' c9', 'c10']
 
-def _build_monitor_line(ppm_frame, state=None, hz=0.0):
+
+# MARK: - Transmitter profile
+
+class Profile:
+    """
+    Configurable parameters for a transmitter profile.
+
+    Default values match the module-level constants so that ``Profile()``
+    produces behaviour identical to the built-in channel mapping.
+    """
+
+    def __init__(self):
+        self.device_name              = ''
+        # Signal timing — all in microseconds
+        self.axis_min_us              = AXIS_MIN_US
+        self.axis_max_us              = AXIS_MAX_US
+        self.axis_center_us           = AXIS_CENTER_US
+        self.axis_deadband_us         = AXIS_DEADBAND_US
+        self.button_threshold_us      = BUTTON_THRESHOLD_US
+        self.button_hysteresis_us     = BUTTON_HYSTERESIS_US
+        self.slider_low_threshold_us  = SLIDER_LOW_THRESHOLD
+        self.slider_high_threshold_us = SLIDER_HIGH_THRESHOLD
+        self.sync_min_us              = 3_000
+        self.sync_max_us              = 50_000
+        self.channel_min_us           = 500
+        self.channel_max_us           = 2_100
+        # Channel map — same tuple format as CHANNEL_MAP; None = unmapped slot
+        self.channel_map              = list(CHANNEL_MAP)
+        # Per-channel display labels aligned with channel_map
+        self.monitor_labels           = list(_MONITOR_LABELS[:len(CHANNEL_MAP)])
+
+
+def load_profile(path):
+    """
+    Load a TOML transmitter profile from *path* and return a Profile.
+    Requires Python 3.11+ (tomllib).
+    """
+    try:
+        import tomllib
+    except ImportError:
+        sys.exit('--config requires Python 3.11+ (or: pip install tomli)')
+
+    with open(path, 'rb') as f:
+        data = tomllib.load(f)
+
+    p = Profile()
+
+    if src := data.get('source', {}):
+        p.device_name = src.get('device_name', '')
+
+    if sig := data.get('signal', {}):
+        for field in ('axis_min_us', 'axis_max_us', 'axis_center_us',
+                      'axis_deadband_us', 'button_threshold_us',
+                      'button_hysteresis_us', 'slider_low_threshold_us',
+                      'slider_high_threshold_us', 'sync_min_us', 'sync_max_us',
+                      'channel_min_us', 'channel_max_us'):
+            if field in sig:
+                setattr(p, field, int(sig[field]))
+
+    channels = data.get('channel', [])
+    if channels:
+        seen = {}
+        for ch in channels:
+            if 'index' not in ch:
+                raise ValueError("each [[channel]] must have an 'index' field")
+            idx = int(ch['index'])
+            if idx < 1:
+                raise ValueError(f'channel index must be ≥ 1, got {idx}')
+            if idx in seen:
+                raise ValueError(f'duplicate channel index {idx}')
+            seen[idx] = ch
+
+        max_idx = max(seen)
+        p.channel_map    = [None] * max_idx
+        p.monitor_labels = [f' c{i + 1}' for i in range(max_idx)]
+
+        for idx, ch in seen.items():
+            i       = idx - 1
+            ch_type = ch.get('type')
+            label   = ch.get('label', f' c{idx}')
+            p.monitor_labels[i] = label
+            if ch_type == 'axis':
+                code   = _resolve_code(ch['code'])
+                invert = bool(ch.get('invert', False))
+                p.channel_map[i] = ('axis', code, invert) if invert else ('axis', code)
+            elif ch_type == 'button':
+                code = _resolve_code(ch['code'])
+                p.channel_map[i] = ('button', code)
+            elif ch_type == 'three_pos':
+                lo = _resolve_code(ch['low_code'])
+                hi = _resolve_code(ch['high_code'])
+                if 'low_threshold_us' in ch:
+                    p.slider_low_threshold_us = int(ch['low_threshold_us'])
+                if 'high_threshold_us' in ch:
+                    p.slider_high_threshold_us = int(ch['high_threshold_us'])
+                p.channel_map[i] = ('three_pos', lo, hi)
+            else:
+                raise ValueError(f'channel {idx}: unknown type {ch_type!r}')
+
+    return p
+
+
+def _build_monitor_line(ppm_frame, state=None, hz=0.0, profile=None):
     """
     Return a compact one-line summary of all decoded controls.
 
@@ -876,9 +1090,19 @@ def _build_monitor_line(ppm_frame, state=None, hz=0.0):
     actual joystick state from `state` (after hysteresis) when provided, or
     fall back to a simple threshold comparison against the raw PPM value.
     """
+    cm       = profile.channel_map              if profile is not None else CHANNEL_MAP
+    labels   = profile.monitor_labels           if profile is not None else _MONITOR_LABELS
+    axis_min = profile.axis_min_us              if profile is not None else AXIS_MIN_US
+    axis_max = profile.axis_max_us              if profile is not None else AXIS_MAX_US
+    btn_thr  = profile.button_threshold_us      if profile is not None else BUTTON_THRESHOLD_US
+    sl_lo    = profile.slider_low_threshold_us  if profile is not None else SLIDER_LOW_THRESHOLD
+    sl_hi    = profile.slider_high_threshold_us if profile is not None else SLIDER_HIGH_THRESHOLD
+
     parts = []
-    for channel_index, channel_def in enumerate(CHANNEL_MAP):
-        label        = _MONITOR_LABELS[channel_index]
+    for channel_index, channel_def in enumerate(cm):
+        if channel_def is None:
+            continue
+        label        = labels[channel_index] if channel_index < len(labels) else f' c{channel_index + 1}'
         channel_type = channel_def[0]
 
         if channel_index >= len(ppm_frame):
@@ -894,15 +1118,15 @@ def _build_monitor_line(ppm_frame, state=None, hz=0.0):
 
         if channel_type == 'axis':
             invert     = len(channel_def) > 2 and channel_def[2]
-            display_us = (AXIS_MIN_US + AXIS_MAX_US - raw_us) if invert else raw_us
-            parts.append(f'{label}:{_axis_bar(display_us)}')
+            display_us = (axis_min + axis_max - raw_us) if invert else raw_us
+            parts.append(f'{label}:{_axis_bar(display_us, axis_min=axis_min, axis_max=axis_max)}')
 
         elif channel_type == 'button':
             btn_code = channel_def[1]
             if state is not None:
                 pressed = state.button_states[btn_code]
             else:
-                pressed = raw_us > BUTTON_THRESHOLD_US
+                pressed = raw_us > btn_thr
             parts.append(f'{label}:{"■" if pressed else "□"}')
 
         elif channel_type == 'three_pos':
@@ -915,9 +1139,9 @@ def _build_monitor_line(ppm_frame, state=None, hz=0.0):
                 else:                          # neither → physical low/rest
                     pos = 'LOW'
             else:
-                if raw_us > SLIDER_HIGH_THRESHOLD:
+                if raw_us > sl_hi:
                     pos = 'HI '
-                elif raw_us > SLIDER_LOW_THRESHOLD:
+                elif raw_us > sl_lo:
                     pos = 'MID'
                 else:
                     pos = 'LOW'
@@ -1041,7 +1265,13 @@ def main():
         help=f'Audio sample rate in Hz (default: {AUDIO_SAMPLE_RATE}); '
              f'higher rates (96000, 192000) improve timing precision',
     )
+    argument_parser.add_argument(
+        '--config', default=None, metavar='PATH',
+        help='TOML transmitter profile (default: built-in Absima CR10P mapping)',
+    )
     args = argument_parser.parse_args()
+
+    profile = load_profile(args.config) if args.config else Profile()
 
     if not args.no_joystick and not os.path.exists('/dev/uinput'):
         sys.exit('error: /dev/uinput not found – is the uinput kernel module loaded?\n'
@@ -1087,12 +1317,15 @@ def main():
         audio_source_label = args.device
 
     uinput_fd = None
+    if profile.device_name:
+        print(f'Profile: {profile.device_name}')
+
     if args.no_joystick:
         print('Virtual joystick: disabled (--no-joystick)')
     else:
         print('Creating virtual joystick … ', end='', flush=True)
         try:
-            uinput_fd = open_uinput_joystick()
+            uinput_fd = open_uinput_joystick(profile)
         except PermissionError:
             sys.exit('error: cannot open /dev/uinput – check ACL or group membership\n'
                      '       use --no-joystick to run without creating a virtual device')
@@ -1140,9 +1373,12 @@ def main():
         audio_capture_proc = start_audio_capture(args.device, actual_rate)
         audio_source       = audio_capture_proc.stdout
 
-    ppm_decoder    = PpmDecoder(max_channels=PPM_DECODE_MAX_CHANNELS, debug=args.debug,
-                               sample_rate=actual_rate, threshold=args.threshold)
-    output_state   = ChannelOutputState()
+    ppm_decoder  = PpmDecoder(max_channels=PPM_DECODE_MAX_CHANNELS, debug=args.debug,
+                             sample_rate=actual_rate, threshold=args.threshold,
+                             sync_min_us=profile.sync_min_us, sync_max_us=profile.sync_max_us,
+                             channel_min_us=profile.channel_min_us,
+                             channel_max_us=profile.channel_max_us)
+    output_state = ChannelOutputState(profile.channel_map)
     frames_decoded = 0
     last_frame_time    = None
     in_signal_gap      = False
@@ -1228,7 +1464,7 @@ def main():
                     ui.log(f'PPM signal detected — {ch_count} channels')
 
                 if uinput_fd is not None:
-                    btn_transitions = emit_channel_events(uinput_fd, output_state, completed_frame)
+                    btn_transitions = emit_channel_events(uinput_fd, output_state, completed_frame, profile)
                     if btn_transitions:
                         for ch_label, pressed in btn_transitions:
                             ui.log(f'BTN {ch_label}: {"PRESS  ▶" if pressed else "release ◀"}')
@@ -1239,7 +1475,7 @@ def main():
                     if args.monitor:
                         status.append(
                             _build_monitor_line(completed_frame, output_state,
-                                                ppm_decoder.last_frame_hz)
+                                                ppm_decoder.last_frame_hz, profile)
                         )
                     if args.debug:
                         status.extend(ppm_decoder.last_debug_lines)
@@ -1252,7 +1488,7 @@ def main():
                 else:
                     if args.monitor:
                         line = _build_monitor_line(completed_frame, output_state,
-                                                   ppm_decoder.last_frame_hz)
+                                                   ppm_decoder.last_frame_hz, profile)
                         sys.stdout.write(f'\r{line}\033[K')
                         sys.stdout.flush()
                     if args.debug and ppm_decoder.last_debug_lines:

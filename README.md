@@ -95,6 +95,29 @@ replay the file through `ppm2hid.py`:
 python3 record_ppm.py          # records until Ctrl-C
 ```
 
+## Profiles
+
+A profile configures the channel mapping and signal timing for your transmitter.
+
+```bash
+python3 ppm2hid.py --config profiles/absima_cr10p.toml
+```
+
+See `profiles/absima_cr10p.toml` for a documented example.
+
+Each `[[channel]]` entry requires an explicit `index` field (1-based PPM channel
+number) so channels can appear in any order in the file and gaps are allowed.
+Unmapped channels are silently skipped.
+
+Button codes use Xbox-style names: `BTN_SOUTH` (A), `BTN_EAST` (B), `BTN_NORTH` (Y),
+`BTN_WEST` (X), `BTN_TL` / `BTN_TR` (bumpers), `BTN_THUMBL` / `BTN_THUMBR` (sticks).
+Axis codes: `ABS_X`, `ABS_Y`, `ABS_RX`, `ABS_RY`, `ABS_Z`, `ABS_GAS`, `ABS_BRAKE`, etc.
+Raw integers are also accepted for any code.
+
+Profiles that use only `BTN_GAMEPAD` range codes (0x130+) produce an evdev gamepad
+(`/dev/input/event*`) rather than a joydev joystick (`/dev/input/js*`).
+The tool prints a note when this happens.
+
 ## Testing
 
 ```bash

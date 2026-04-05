@@ -1,0 +1,71 @@
+# Absima CR10P / Dumbo RC DDF-350 transmitter profile
+#
+# Uses Xbox-style button names (BTN_GAMEPAD range 0x130+).
+# These produce an evdev gamepad (/dev/input/event*) rather than
+# a joydev joystick (/dev/input/js*).
+
+[source]
+device_name = "Absima CR10P / Dumbo RC DDF-350"
+
+[signal]
+axis_min_us              = 1100
+axis_max_us              = 1900
+axis_center_us           = 1500
+axis_deadband_us         = 42
+button_threshold_us      = 1500
+button_hysteresis_us     = 21
+slider_low_threshold_us  = 1300
+slider_high_threshold_us = 1700
+sync_min_us              = 3000
+channel_min_us           = 500
+channel_max_us           = 2100
+
+[[channel]]
+index = 1
+type  = "axis"
+code  = "ABS_X"
+label = "STR"
+
+[[channel]]
+index  = 2
+type   = "axis"
+code   = "ABS_Y"
+invert = true
+label  = "THR"
+
+[[channel]]
+index = 3
+type  = "button"
+code  = "BTN_SOUTH"   # A — ch3 momentary switch
+label = " c3"
+
+[[channel]]
+index = 4
+type  = "button"
+code  = "BTN_EAST"    # B — ch4 momentary switch
+label = " c4"
+
+[[channel]]
+index = 5
+type  = "axis"
+code  = "ABS_RX"
+label = " RX"
+
+[[channel]]
+index = 6
+type  = "axis"
+code  = "ABS_RY"
+label = " RY"
+
+[[channel]]
+index     = 7
+type      = "three_pos"
+low_code  = "BTN_TL"   # LB — slider lo/mid boundary
+high_code = "BTN_TR"   # RB — slider mid/hi boundary
+label     = " c7"
+
+[[channel]]
+index = 8
+type  = "button"
+code  = "BTN_WEST"    # X — ch8 momentary switch
+label = " c8"
