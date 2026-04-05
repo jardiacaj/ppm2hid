@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "ppm2hid"
+version = "0.1.0"
+description = "RC transmitter PPM audio input → Linux virtual joystick via uinput"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [{ name = "Joan Ardiaca Jové" }]
+keywords = ["RC", "PPM", "uinput", "joystick", "PipeWire"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Games/Entertainment",
+    "Topic :: System :: Hardware",
+]
+dependencies = []
+
+[project.scripts]
+ppm2hid = "ppm2hid:main"
+
+[project.urls]
+Homepage = "https://github.com/jardiacaj/ppm2hid"
+"Bug Tracker" = "https://github.com/jardiacaj/ppm2hid/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ppm2hid*"]
