@@ -48,7 +48,7 @@ class TestNoiseRejection(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not os.path.exists(RECORDING_PATH):
-            raise unittest.SkipTest(_SKIP_MSG)
+            raise FileNotFoundError(_SKIP_MSG)
         cls.left, cls.right, cls.sample_rate = _load_stereo_samples(RECORDING_PATH)
 
     def _decode(self, samples):

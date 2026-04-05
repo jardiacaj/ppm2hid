@@ -83,12 +83,10 @@ class TestPpmDecoder(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not os.path.exists(RECORDING_PATH):
-            raise unittest.SkipTest(
+            raise FileNotFoundError(
                 f"Recording not found: {RECORDING_PATH}\n"
                 f"Record with:\n"
-                f"  parecord --device=alsa_input.pci-0000_00_1f.3.analog-stereo "
-                f"--format=s16le --rate={RECORDING_SAMPLE_RATE} --channels=2 --raw "
-                f"--latency-msec=20 {RECORDING_PATH}"
+                f"  python3 record_ppm.py --name ppm_capture_192k --duration 15"
             )
 
         samples, sample_rate = _load_left_channel_samples(RECORDING_PATH)

@@ -105,20 +105,93 @@ A profile configures the channel mapping and signal timing for your transmitter.
 python3 ppm2hid.py --config profiles/absima_cr10p.toml
 ```
 
-See `profiles/absima_cr10p.toml` for a documented example.
+See `profiles/absima_cr10p.toml` for a working example with all sections and fields.
 
-Each `[[channel]]` entry requires an explicit `index` field (1-based PPM channel
-number) so channels can appear in any order in the file and gaps are allowed.
-Unmapped channels are silently skipped.
+### `[source]` section
 
-Button codes use Xbox-style names: `BTN_SOUTH` (A), `BTN_EAST` (B), `BTN_NORTH` (Y),
-`BTN_WEST` (X), `BTN_TL` / `BTN_TR` (bumpers), `BTN_THUMBL` / `BTN_THUMBR` (sticks).
-Axis codes: `ABS_X`, `ABS_Y`, `ABS_RX`, `ABS_RY`, `ABS_Z`, `ABS_GAS`, `ABS_BRAKE`, etc.
-Raw integers are also accepted for any code.
+```toml
+[source]
+device_name = "My Transmitter"   # shown at startup; optional
+```
 
-Profiles that use only `BTN_GAMEPAD` range codes (0x130+) produce an evdev gamepad
-(`/dev/input/event*`) rather than a joydev joystick (`/dev/input/js*`).
-The tool prints a note when this happens.
+### `[signal]` section
+
+All timing values are in microseconds (µs).  Fields not listed keep the built-in
+Absima CR10P defaults.
+
+```toml
+[signal]
+axis_min_us              = 1100   # minimum expected channel pulse width
+axis_max_us              = 1900   # maximum expected channel pulse width
+axis_center_us           = 1500   # neutral / centre value for axes
+axis_deadband_us         = 42     # axis events suppressed within ±deadband of last sent value
+button_threshold_us      = 1500   # raw PPM value above which a button is "pressed"
+button_hysteresis_us     = 21     # hysteresis around button_threshold to prevent jitter
+slider_low_threshold_us  = 1300   # three_pos: LOW→MID boundary
+slider_high_threshold_us = 1700   # three_pos: MID→HI boundary
+sync_min_us              = 3000   # shortest pulse treated as a frame sync
+sync_max_us              = 50000  # longest pulse treated as a frame sync
+channel_min_us           = 500    # shortest pulse treated as a valid channel value
+channel_max_us           = 2100   # longest pulse treated as a valid channel value
+```
+
+### `[[channel]]` entries
+
+Each PPM channel is described by one `[[channel]]` entry.  `index` is required
+and 1-based.  Entries may appear in any order; gaps leave `None` slots (silently
+skipped during output).
+
+#### Proportional axis
+
+```toml
+[[channel]]
+index  = 1
+type   = "axis"
+code   = "ABS_X"    # axis code name or raw integer
+invert = false      # if true, value is mirrored around centre (optional, default false)
+label  = "STR"      # display label in --monitor (optional)
+```
+
+Available axis codes: `ABS_X`, `ABS_Y`, `ABS_Z`, `ABS_RX`, `ABS_RY`, `ABS_RZ`,
+`ABS_THROTTLE`, `ABS_RUDDER`, `ABS_WHEEL`, `ABS_GAS`, `ABS_BRAKE`.
+
+#### Momentary button
+
+```toml
+[[channel]]
+index = 3
+type  = "button"
+code  = "BTN_SOUTH"   # button code name or raw integer
+label = " c3"
+```
+
+Xbox-style gamepad codes (0x130+): `BTN_SOUTH` (A), `BTN_EAST` (B), `BTN_NORTH` (Y),
+`BTN_WEST` (X), `BTN_TL` / `BTN_TR` (bumpers), `BTN_TL2` / `BTN_TR2` (triggers),
+`BTN_SELECT`, `BTN_START`, `BTN_MODE`, `BTN_THUMBL` / `BTN_THUMBR` (stick clicks).
+
+Joystick codes (0x120+): `BTN_TRIGGER`, `BTN_THUMB`, `BTN_THUMB2`, `BTN_TOP`,
+`BTN_TOP2`, `BTN_PINKIE`, `BTN_BASE` … `BTN_BASE6`, `BTN_DEAD`.
+At least one code in this range (0x120–0x12f) is required for a `/dev/input/js*`
+device to appear; gamepad-only profiles produce an evdev-only device.
+
+Raw integer codes are accepted for any field that takes a code name.
+
+#### Three-position slider
+
+```toml
+[[channel]]
+index     = 7
+type      = "three_pos"
+low_code  = "BTN_TL"    # button sent when slider moves from LOW to MID
+high_code = "BTN_TR"    # button sent when slider moves from MID to HI
+label     = " c7"
+# Per-channel threshold overrides (optional — defaults to [signal] values):
+low_threshold_us  = 1300
+high_threshold_us = 1700
+```
+
+The slider maps to two buttons: `low_code` is pressed in MID and HI positions;
+`high_code` is additionally pressed in the HI position.
 
 ## Testing
 
@@ -139,9 +212,8 @@ Test files and what they require:
 | `test_channel_sweeps.py` | `testdata/ch01_sweep.wav` … `ch08_sweep.wav` | yes |
 | `test_cable_reconnect.py` | `testdata/cable_reconnect.wav` | yes |
 
-Tests that require a recording auto-skip if the file is absent. To produce
-missing recordings see the instructions at the top of each test file or in
-`FUTURE.md`.
+Tests that require a recording fail if the file is absent. To produce
+missing recordings see the instructions at the top of each test file.
 
 ## License
 

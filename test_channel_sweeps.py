@@ -118,7 +118,7 @@ class _SweepMixin:
     @classmethod
     def setUpClass(cls):
         if not os.path.exists(cls.RECORDING_PATH):
-            raise unittest.SkipTest(
+            raise FileNotFoundError(
                 f'Recording not found: {cls.RECORDING_PATH}\n'
                 f'Record with (transmitter ON, move only ch{cls.CHANNEL_INDEX + 1}):\n'
                 f'  python3 record_ppm.py --name '

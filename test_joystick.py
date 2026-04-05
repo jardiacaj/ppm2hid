@@ -199,7 +199,7 @@ class TestButtonHysteresis(unittest.TestCase):
         state = ChannelOutputState()
         transitions = _emit(sink, state, self._ch3_frame(self.PRESS_THRESHOLD + 1))
         self.assertIn((EV_KEY, BTN_SW_CH3, 1), sink.events())
-        self.assertIn(('ch3', True), transitions)
+        self.assertIn((3, BTN_SW_CH3, True), transitions)
 
     def test_value_at_press_threshold_does_not_press(self):
         """raw_us = 1521 — with hys=-21 (released state): threshold = 1521, need > 1521."""
@@ -224,7 +224,7 @@ class TestButtonHysteresis(unittest.TestCase):
         # Release: value <= 1479
         transitions = _emit(sink, state, self._ch3_frame(self.RELEASE_THRESHOLD))
         self.assertIn((EV_KEY, BTN_SW_CH3, 0), sink.events())
-        self.assertIn(('ch3', False), transitions)
+        self.assertIn((3, BTN_SW_CH3, False), transitions)
 
     def test_value_just_above_release_threshold_stays_pressed(self):
         """raw_us = 1480: with hys=+21 (pressed state): threshold = 1479, need <= 1479."""
@@ -315,7 +315,7 @@ class TestSliderThreePos(unittest.TestCase):
         transitions = _emit(sink, state, self._ch7_frame(_PROFILE.axis_center_us))
         self.assertIn((EV_KEY, BTN_SL_LO, 1), sink.events())
         self.assertNotIn((EV_KEY, BTN_SL_HI, 1), sink.events())
-        self.assertIn(('ch7', True), transitions)
+        self.assertIn((7, BTN_SL_LO, True), transitions)
 
     def test_mid_to_low_releases_btnsllo(self):
         sink  = _WriteSink()
@@ -379,15 +379,15 @@ class TestTransitions(unittest.TestCase):
         state = ChannelOutputState()
         t = _emit(sink, state, _make_frame(_PROFILE.axis_center_us, _PROFILE.axis_center_us, 1900))
         self.assertEqual(len(t), 1)
-        self.assertEqual(t[0], ('ch3', True))
+        self.assertEqual(t[0], (3, BTN_SW_CH3, True))
 
     def test_press_then_release_returns_separate_transitions(self):
         sink  = _WriteSink()
         state = ChannelOutputState()
         t_press   = _emit(sink, state, _make_frame(_PROFILE.axis_center_us, _PROFILE.axis_center_us, 1900))
         t_release = _emit(sink, state, _make_frame(_PROFILE.axis_center_us, _PROFILE.axis_center_us, 1100))
-        self.assertEqual(t_press,   [('ch3', True)])
-        self.assertEqual(t_release, [('ch3', False)])
+        self.assertEqual(t_press,   [(3, BTN_SW_CH3, True)])
+        self.assertEqual(t_release, [(3, BTN_SW_CH3, False)])
 
 
 # ── Integration test ──────────────────────────────────────────────────────────
@@ -401,9 +401,9 @@ class TestIntegrationRecording(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not os.path.exists(RECORDING_PATH):
-            raise unittest.SkipTest(
+            raise FileNotFoundError(
                 f"Recording not found: {RECORDING_PATH}  "
-                f"(run parecord to create it)"
+                f"(run: python3 record_ppm.py --name ppm_capture_192k --duration 15)"
             )
         with open(RECORDING_PATH, 'rb') as f:
             raw = f.read()

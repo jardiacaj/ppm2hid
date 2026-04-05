@@ -599,6 +599,31 @@ class ChannelOutputState:
         self.button_states = {code: False for code in btn_codes}
 
 
+def reset_joystick_to_neutral(fd, state, profile=None):
+    """
+    Send axis-centre and button-released events for every mapped control,
+    then flush with EV_SYN.  Used to put the virtual joystick in a safe resting
+    state when the PPM signal is lost.
+    """
+    if profile is None:
+        profile = Profile()
+    center = profile.axis_center_us
+    for ch in profile.channel_map:
+        if ch is None:
+            continue
+        if ch[0] == 'axis':
+            state.axis_values[ch[1]] = center
+            _write_input_event(fd, EV_ABS, ch[1], center)
+        elif ch[0] == 'button':
+            state.button_states[ch[1]] = False
+            _write_input_event(fd, EV_KEY, ch[1], 0)
+        elif ch[0] == 'three_pos':
+            for btn_code in (ch[1], ch[2]):
+                state.button_states[btn_code] = False
+                _write_input_event(fd, EV_KEY, btn_code, 0)
+    _flush_events(fd)
+
+
 def emit_channel_events(fd, state, ppm_frame, profile=None):
     """
     Convert a decoded PPM frame into uinput events and flush with EV_SYN.
@@ -648,7 +673,7 @@ def emit_channel_events(fd, state, ppm_frame, profile=None):
             if pressed != state.button_states[btn_code]:
                 state.button_states[btn_code] = pressed
                 _write_input_event(fd, EV_KEY, btn_code, int(pressed))
-                transitions.append((f'ch{channel_index + 1}', pressed))
+                transitions.append((channel_index + 1, btn_code, pressed))
 
         elif channel_type == 'three_pos':
             low_btn_code, high_btn_code = channel_def[1], channel_def[2]
@@ -663,7 +688,7 @@ def emit_channel_events(fd, state, ppm_frame, profile=None):
                 if pressed != state.button_states[btn_code]:
                     state.button_states[btn_code] = pressed
                     _write_input_event(fd, EV_KEY, btn_code, int(pressed))
-                    transitions.append((f'ch{channel_index + 1}', pressed))
+                    transitions.append((channel_index + 1, btn_code, pressed))
 
     # Always send EV_SYN – ensures button state reaches readers even when nothing changed
     _flush_events(fd)
@@ -1224,6 +1249,10 @@ CHANNEL_LOCK_FRAMES = 5
 # Wall-clock gap between decoded frames above this threshold triggers a log warning.
 SIGNAL_GAP_THRESHOLD_S = 0.2
 
+# Gap longer than this resets the virtual joystick to neutral (axis centre,
+# all buttons released).  Must be ≥ SIGNAL_GAP_THRESHOLD_S.
+SIGNAL_NEUTRAL_THRESHOLD_S = 0.5
+
 OSCILLOSCOPE_HEIGHT = 7   # rows used by the --oscilloscope waveform display
 
 
@@ -1479,6 +1508,7 @@ def main():
                     else:
                         candidate_ch_count = ch_count
                         stable_count       = 1
+                    continue   # discard frames received before channel count is locked
                 elif ch_count != expected_ch_count:
                     ui.log(
                         f'WARNING: channel count {ch_count} ≠ expected '
@@ -1494,8 +1524,15 @@ def main():
                 if uinput_fd is not None:
                     btn_transitions = emit_channel_events(uinput_fd, output_state, completed_frame, profile)
                     if btn_transitions:
-                        for ch_label, pressed in btn_transitions:
-                            ui.log(f'BTN {ch_label}: {"PRESS  ▶" if pressed else "release ◀"}')
+                        for ch_num, btn_code, pressed in btn_transitions:
+                            # Show transmitter channel, HID key code, and joystick button number
+                            # (joydev assigns button N to BTN_JOYSTICK+N, i.e. 0x120+N)
+                            if 0x120 <= btn_code <= 0x12f:
+                                hid_label = f'EV_KEY 0x{btn_code:03x} (joystick btn {btn_code - 0x120})'
+                            else:
+                                hid_label = f'EV_KEY 0x{btn_code:03x}'
+                            state_str = 'PRESS  ▶' if pressed else 'release ◀'
+                            ui.log(f'ch{ch_num} → {hid_label}: {state_str}')
 
                 # ── Display update ────────────────────────────────────────────
                 if ui.active:
@@ -1521,6 +1558,16 @@ def main():
                         sys.stdout.flush()
                     if args.debug and ppm_decoder.last_debug_lines:
                         ui.render_debug_stderr(ppm_decoder.last_debug_lines)
+
+            # ── Neutral reset on prolonged signal absence ─────────────────────
+            # Checked once per chunk so the reset fires even when the signal is
+            # completely absent and the inner per-frame loop never fires.
+            if (uinput_fd is not None and not real_time_file
+                    and last_frame_time is not None and not in_signal_gap
+                    and time.monotonic() - last_frame_time > SIGNAL_NEUTRAL_THRESHOLD_S):
+                in_signal_gap = True
+                ui.log(f'*** SIGNAL LOST — joystick reset to neutral ***')
+                reset_joystick_to_neutral(uinput_fd, output_state, profile)
 
             # ── Real-time throttle (file mode only) ───────────────────────────
             if real_time_file:

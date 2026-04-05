@@ -86,7 +86,7 @@ class TestCableReconnect(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not os.path.exists(RECORDING_PATH):
-            raise unittest.SkipTest(
+            raise FileNotFoundError(
                 f'Recording not found: {RECORDING_PATH}\n'
                 'Record with:\n'
                 '  python3 record_ppm.py --name cable_reconnect --duration 10\n'

@@ -69,7 +69,7 @@ class TestPpmBadCable(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not os.path.exists(RECORDING_PATH):
-            raise unittest.SkipTest(f'Recording not found: {RECORDING_PATH}')
+            raise FileNotFoundError(f'Recording not found: {RECORDING_PATH}')
 
         samples, sample_rate = _load_left_channel_samples(RECORDING_PATH)
         cls.sample_rate     = sample_rate
