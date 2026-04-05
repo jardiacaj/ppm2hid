@@ -152,10 +152,7 @@ INPUT_EVENT_STRUCT = 'qqHHi'
 
 # MARK: - PPM timing constants
 
-AUDIO_SAMPLE_RATE = 48_000   # Hz
-
-def _microseconds_to_samples(us):
-    return us * AUDIO_SAMPLE_RATE // 1_000_000
+AUDIO_SAMPLE_RATE = 48_000   # Hz — default; overridden by --rate or WAV header
 
 AUDIO_THRESHOLD  = 0       # int16 zero-crossing: PPM signal swings between +32767 and −32768
                            # (works at all sample rates since the ADC clips both polarity)
@@ -163,12 +160,6 @@ AUDIO_THRESHOLD  = 0       # int16 zero-crossing: PPM signal swings between +327
 AUDIO_HYSTERESIS = 4_000   # Schmitt trigger dead zone (±4000 out of ±32768 ≈ ±12 %).
                            # Noise must not exceed this amplitude to avoid phantom frames.
                            # A real PPM signal swings nearly full-range, so this is safe.
-
-SYNC_MIN_SAMPLES    = _microseconds_to_samples(3_000)    # >3 ms → sync pulse
-SYNC_MAX_SAMPLES    = _microseconds_to_samples(50_000)
-
-CHANNEL_MIN_SAMPLES = _microseconds_to_samples(500)    # min HIGH to accept as channel
-CHANNEL_MAX_SAMPLES = _microseconds_to_samples(2_100)  # max HIGH below sync threshold
 
 
 # MARK: - Axis / button calibration
@@ -178,7 +169,7 @@ AXIS_MAX_US    = 1_900
 AXIS_CENTER_US = (AXIS_MIN_US + AXIS_MAX_US) // 2   # 1500 µs
 
 # Suppress axis events smaller than this to remove quantisation noise.
-# ≈ 2 samples at the configured sample rate (e.g. 10 µs at 192 kHz, 42 µs at 48 kHz).
+# 42 µs ≈ 2 samples at 48 kHz; conservative enough to be safe at higher rates too.
 AXIS_DEADBAND_US = max(1, 2 * 1_000_000 // AUDIO_SAMPLE_RATE)
 
 BUTTON_THRESHOLD_US   = AXIS_CENTER_US   # value above this → pressed
@@ -188,10 +179,6 @@ BUTTON_THRESHOLD_US   = AXIS_CENTER_US   # value above this → pressed
 BUTTON_HYSTERESIS_US  = 21               # ≈ 1 sample at 48 kHz
 SLIDER_LOW_THRESHOLD  = 1_300            # ch7 low position threshold (µs)
 SLIDER_HIGH_THRESHOLD = 1_700            # ch7 high position threshold (µs)
-
-
-def samples_to_microseconds(samples):
-    return samples * 1_000_000 // AUDIO_SAMPLE_RATE
 
 
 # MARK: - Channel map

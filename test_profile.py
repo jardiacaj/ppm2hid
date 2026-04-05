@@ -91,11 +91,11 @@ class TestLoadProfileAbsima(unittest.TestCase):
         self.assertEqual(ch[0], 'axis')
         self.assertEqual(ch[1], 0x00)   # ABS_X
 
-    def test_ch2_is_inverted_axis(self):
+    def test_ch2_is_axis(self):
         ch = self.profile.channel_map[1]
         self.assertEqual(ch[0], 'axis')
         self.assertEqual(ch[1], 0x01)   # ABS_Y
-        self.assertTrue(ch[2])          # invert=True
+        self.assertEqual(len(ch), 2)    # not inverted
 
     def test_ch7_is_three_pos(self):
         ch = self.profile.channel_map[6]

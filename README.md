@@ -43,7 +43,7 @@ Tested hardware: **Absima CR10P / Dumbo RC DDF-350** transmitter.
 
 ### Python
 
-- Python 3.9+ (stdlib only — no `pip install` required)
+- Python 3.11+ (stdlib only — no `pip install` required)
 
 ### Hardware
 
@@ -88,12 +88,13 @@ precision at the cost of higher CPU usage.
 
 ## Utilities
 
-**`record_ppm.py`** — auto-detects the PPM audio source and writes a
-timestamped raw recording. After recording it prints the exact command to
-replay the file through `ppm2hid.py`:
+**`record_ppm.py`** — auto-detects the PPM audio source and writes a WAV
+recording. After recording it prints the exact command to replay the file
+through `ppm2hid.py`:
 
 ```bash
-python3 record_ppm.py          # records until Ctrl-C
+python3 record_ppm.py                        # records until Ctrl-C
+python3 record_ppm.py --name sweep --duration 3   # 3 s → testdata/sweep.wav
 ```
 
 ## Profiles
@@ -125,13 +126,22 @@ The tool prints a note when this happens.
 python3 -m unittest discover -v
 ```
 
-This discovers and runs all three test files:
+Test files and what they require:
 
-- `test_joystick.py` — unit tests for channel-to-HID event mapping (no hardware needed)
-- `test_ppm2hid.py` — decoder integration tests against `testdata/ppm_capture_192k.wav`
-  (good cable, 192 kHz, 15 s — included in the repository)
-- `test_ppm_bad_cable.py` — decoder recovery tests against `testdata/ppm_capture.wav`
-  (bad cable, 48 kHz, 30 s — tests signal drop detection and re-synchronisation)
+| Test file | Recording needed | Included |
+|-----------|-----------------|----------|
+| `test_joystick.py` | none (unit tests) | — |
+| `test_display.py` | none (unit tests) | — |
+| `test_profile.py` | none (unit tests) | — |
+| `test_ppm2hid.py` | `testdata/ppm_capture_192k.wav` | yes |
+| `test_ppm_bad_cable.py` | `testdata/ppm_capture.wav` | yes |
+| `test_noise.py` | `testdata/noise_tx_off.wav` | yes |
+| `test_channel_sweeps.py` | `testdata/ch01_sweep.wav` … `ch08_sweep.wav` | yes |
+| `test_cable_reconnect.py` | `testdata/cable_reconnect.wav` | yes |
+
+Tests that require a recording auto-skip if the file is absent. To produce
+missing recordings see the instructions at the top of each test file or in
+`FUTURE.md`.
 
 ## License
 
