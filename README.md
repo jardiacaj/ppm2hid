@@ -78,7 +78,8 @@ Behaviour:
   --no-joystick        Decode without opening /dev/uinput
   --no-mixer           Skip ALSA Input Source switching
   --no-realtime        With --file: consume as fast as possible
-  --threshold N        int16 HIGH threshold (default: 0)
+  --threshold N        int16 midpoint for HIGH/LOW detection (default: 0)
+  --hysteresis N       int16 dead zone around --threshold (default: 4000)
   --rate HZ            Sample rate in Hz (default: 48000)
 ```
 

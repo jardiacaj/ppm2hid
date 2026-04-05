@@ -54,7 +54,8 @@ def _decode_with_sample_indices(samples, sample_rate):
     Decode all samples through PpmDecoder and return a list of
     (sample_index, frame) for every complete frame decoded.
     """
-    decoder = PpmDecoder(max_channels=len(CHANNEL_MAP), sample_rate=sample_rate)
+    decoder = PpmDecoder(max_channels=len(CHANNEL_MAP), sample_rate=sample_rate,
+                         hysteresis=0)
     results = []
     for idx, sample in enumerate(samples):
         frame = decoder.feed(sample)

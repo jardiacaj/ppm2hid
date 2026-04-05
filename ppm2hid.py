@@ -157,9 +157,12 @@ AUDIO_SAMPLE_RATE = 48_000   # Hz
 def _microseconds_to_samples(us):
     return us * AUDIO_SAMPLE_RATE // 1_000_000
 
-AUDIO_THRESHOLD = 0   # int16 zero-crossing: PPM signal swings between +32767 and −32768
-                      # (works at all sample rates since the ADC clips both polarity)
-                      # Override with --threshold if your audio path has a DC offset.
+AUDIO_THRESHOLD  = 0       # int16 zero-crossing: PPM signal swings between +32767 and −32768
+                           # (works at all sample rates since the ADC clips both polarity)
+                           # Override with --threshold if your audio path has a DC offset.
+AUDIO_HYSTERESIS = 4_000   # Schmitt trigger dead zone (±4000 out of ±32768 ≈ ±12 %).
+                           # Noise must not exceed this amplitude to avoid phantom frames.
+                           # A real PPM signal swings nearly full-range, so this is safe.
 
 SYNC_MIN_SAMPLES    = _microseconds_to_samples(3_000)    # >3 ms → sync pulse
 SYNC_MAX_SAMPLES    = _microseconds_to_samples(50_000)
@@ -259,12 +262,14 @@ class PpmDecoder:
 
     def __init__(self, max_channels=10, debug=False,
                  sample_rate=AUDIO_SAMPLE_RATE, threshold=AUDIO_THRESHOLD,
+                 hysteresis=AUDIO_HYSTERESIS,
                  sync_min_us=3_000, sync_max_us=50_000,
                  channel_min_us=500, channel_max_us=2_100):
         self.max_channels    = max_channels
         self._debug          = debug
         self._sample_rate    = sample_rate
         self._threshold      = threshold
+        self._hysteresis     = hysteresis
         # Timing thresholds in samples, derived from sample_rate so the decoder
         # works correctly at 48 kHz, 96 kHz, 192 kHz, etc.
         self._sync_min  = sample_rate * sync_min_us    // 1_000_000
@@ -292,9 +297,20 @@ class PpmDecoder:
         """
         Process one int16 audio sample.
         Returns a list of µs values when a frame completes, else None.
+
+        Uses Schmitt trigger logic when hysteresis > 0: the signal must
+        exceed threshold + hysteresis to register HIGH, and drop below
+        threshold - hysteresis to register LOW.  Samples in between keep
+        the current level, preventing noise from producing phantom pulses.
         """
         self._sample_count += 1
-        new_level = 'high' if sample > self._threshold else 'low'
+        if sample > self._threshold + self._hysteresis:
+            new_level = 'high'
+        elif sample < self._threshold - self._hysteresis:
+            new_level = 'low'
+        else:
+            # Dead zone — keep current level (or low before first real edge)
+            new_level = self._current_level if self._current_level is not None else 'low'
 
         if new_level == self._current_level:
             self._run_length += 1
@@ -840,7 +856,8 @@ def list_pipewire_sources():
 
 
 def probe_source_for_ppm(source_name, sample_rate=AUDIO_SAMPLE_RATE,
-                          threshold=AUDIO_THRESHOLD, duration_s=0.5):
+                          threshold=AUDIO_THRESHOLD, hysteresis=AUDIO_HYSTERESIS,
+                          duration_s=0.5):
     """
     Capture a short burst from *source_name* and return the channel index
     (0 = left, 1 = right) where a valid PPM frame is detected, or None if no
@@ -899,7 +916,8 @@ def probe_source_for_ppm(source_name, sample_rate=AUDIO_SAMPLE_RATE,
     # Try normal then inverted on each channel; prefer normal (invert=False first).
     for channel_index, channel_byte_offset in enumerate((0, 2)):
         for invert in (False, True):
-            decoder = PpmDecoder(sample_rate=sample_rate, threshold=threshold)
+            decoder = PpmDecoder(sample_rate=sample_rate, threshold=threshold,
+                                 hysteresis=hysteresis)
             for byte_offset in range(0, len(raw_audio) - 3, 4):
                 sample = struct.unpack_from('<h', raw_audio, byte_offset + channel_byte_offset)[0]
                 if invert:
@@ -910,7 +928,8 @@ def probe_source_for_ppm(source_name, sample_rate=AUDIO_SAMPLE_RATE,
 
 
 def probe_file_for_ppm(file_path, sample_rate=AUDIO_SAMPLE_RATE,
-                        threshold=AUDIO_THRESHOLD, duration_s=0.5):
+                        threshold=AUDIO_THRESHOLD, hysteresis=AUDIO_HYSTERESIS,
+                        duration_s=0.5):
     """
     Read the first *duration_s* seconds of a .wav or raw s16le stereo file and
     return (channel, invert) where a valid PPM frame is detected, or None if no
@@ -933,7 +952,8 @@ def probe_file_for_ppm(file_path, sample_rate=AUDIO_SAMPLE_RATE,
         return None
     for channel_index, channel_byte_offset in enumerate((0, 2)):
         for invert in (False, True):
-            decoder = PpmDecoder(sample_rate=sample_rate, threshold=threshold)
+            decoder = PpmDecoder(sample_rate=sample_rate, threshold=threshold,
+                                 hysteresis=hysteresis)
             for byte_offset in range(0, len(raw_audio) - 3, 4):
                 sample = struct.unpack_from('<h', raw_audio, byte_offset + channel_byte_offset)[0]
                 if invert:
@@ -943,7 +963,8 @@ def probe_file_for_ppm(file_path, sample_rate=AUDIO_SAMPLE_RATE,
     return None
 
 
-def discover_ppm_source(sample_rate=AUDIO_SAMPLE_RATE, threshold=AUDIO_THRESHOLD):
+def discover_ppm_source(sample_rate=AUDIO_SAMPLE_RATE, threshold=AUDIO_THRESHOLD,
+                         hysteresis=AUDIO_HYSTERESIS):
     """
     Enumerate PipeWire/PulseAudio sources and return ``(source_name, channel, invert)``
     for the first source that carries a valid PPM signal (channel 0 = left, 1 = right;
@@ -957,7 +978,8 @@ def discover_ppm_source(sample_rate=AUDIO_SAMPLE_RATE, threshold=AUDIO_THRESHOLD
     print(f'Auto-discovery: probing {len(sources)} source(s) for PPM signal …')
     for source in sources:
         print(f'  {source} … ', end='', flush=True)
-        result = probe_source_for_ppm(source, sample_rate=sample_rate, threshold=threshold)
+        result = probe_source_for_ppm(source, sample_rate=sample_rate, threshold=threshold,
+                                      hysteresis=hysteresis)
         if result is not None:
             channel, invert = result
             ch_name  = 'left' if channel == 0 else 'right'
@@ -1256,8 +1278,15 @@ def main():
     argument_parser.add_argument(
         '--threshold', type=int, default=AUDIO_THRESHOLD,
         metavar='N',
-        help=f'int16 level above which the signal is HIGH (default: {AUDIO_THRESHOLD}); '
-             f'increase if noise causes spurious frames when transmitter is off',
+        help=f'int16 midpoint for HIGH/LOW detection (default: {AUDIO_THRESHOLD}); '
+             f'adjust if the audio path has a DC offset',
+    )
+    argument_parser.add_argument(
+        '--hysteresis', type=int, default=AUDIO_HYSTERESIS,
+        metavar='N',
+        help=f'int16 dead zone around --threshold (default: {AUDIO_HYSTERESIS}); '
+             'signal must exceed threshold+N to register HIGH and drop below '
+             'threshold-N to register LOW — filters noise when the transmitter is off',
     )
     argument_parser.add_argument(
         '--rate', type=int, default=AUDIO_SAMPLE_RATE,
@@ -1290,7 +1319,7 @@ def main():
             sys.exit(f'error: file not found: {args.file}')
         actual_rate = _get_file_sample_rate(args.file, args.rate)
         print(f'Probing {args.file} for PPM signal … ', end='', flush=True)
-        result = probe_file_for_ppm(args.file, actual_rate, args.threshold)
+        result = probe_file_for_ppm(args.file, actual_rate, args.threshold, args.hysteresis)
         if result is None:
             sys.exit(
                 'no PPM signal found\n'
@@ -1308,7 +1337,8 @@ def main():
             mixer_was_modified = True
 
         if args.device is None:
-            args.device, audio_channel, audio_invert = discover_ppm_source(args.rate, args.threshold)
+            args.device, audio_channel, audio_invert = discover_ppm_source(args.rate, args.threshold,
+                                                                             args.hysteresis)
             if args.device is None:
                 sys.exit(
                     'error: no PPM source detected automatically\n'
@@ -1375,6 +1405,7 @@ def main():
 
     ppm_decoder  = PpmDecoder(max_channels=PPM_DECODE_MAX_CHANNELS, debug=args.debug,
                              sample_rate=actual_rate, threshold=args.threshold,
+                             hysteresis=args.hysteresis,
                              sync_min_us=profile.sync_min_us, sync_max_us=profile.sync_max_us,
                              channel_min_us=profile.channel_min_us,
                              channel_max_us=profile.channel_max_us)
