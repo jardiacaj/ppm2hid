@@ -1,24 +1,17 @@
 """
 ppm2hid – RC transmitter PPM audio input → Linux virtual joystick
 
-Captures the PPM signal from the Line In jack (ALC1150, card 0) via
-PipeWire/PulseAudio and exposes a /dev/input/js* virtual joystick using
-the Linux uinput subsystem.
+Captures a PPM signal from a Line In jack via PipeWire/PulseAudio and
+exposes a /dev/input/js* virtual joystick using the Linux uinput subsystem.
 
-PPM signal format (this transmitter – positive/high-active):
+PPM signal format (positive/high-active — the most common convention):
   HIGH pulse  = channel value  (nominally 1100–1900 µs, centre 1500 µs)
-  LOW pulse   = inter-channel separator (~416 µs, constant)
+  LOW pulse   = inter-channel separator (~400 µs, constant)
   SYNC pulse  = long HIGH (>3 ms), marks the end/start of each frame
 
-Channel mapping
-  ch1  → ABS_X      (steering, left/right)
-  ch2  → ABS_Y      (throttle, inverted: push forward = positive, pull back = negative)
-  ch3  → BTN_SW_CH3  (button)
-  ch4  → BTN_SW_CH4  (button)
-  ch5  → ABS_RX      (auxiliary axis)
-  ch6  → ABS_RY      (auxiliary axis)
-  ch7  → BTN_SL_LO / BTN_SL_HI  (3-position slider)
-  ch8  → BTN_SW_CH8  (button)
+Both positive and inverted (LOW-active) signals are detected automatically.
+Channel mapping and signal timing are configured via a TOML profile (--config);
+the built-in defaults match a typical 8-channel RC transmitter.
 """
 
 from __future__ import annotations
