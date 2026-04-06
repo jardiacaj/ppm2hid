@@ -32,8 +32,8 @@ from ppm2hid import (
     INPUT_EVENT_STRUCT,
     EV_SYN, EV_KEY, EV_ABS,
     SYN_REPORT,
-    ABS_X, ABS_Y, ABS_RX, ABS_RY,
-    BTN_SW_CH3, BTN_SW_CH4, BTN_SL_LO, BTN_SL_HI, BTN_SW_CH8,
+    ABS_X, ABS_Y,
+    BTN_SW_CH3, BTN_SW_CH4, BTN_SL_LO, BTN_SL_HI,
 )
 
 _PROFILE = Profile()

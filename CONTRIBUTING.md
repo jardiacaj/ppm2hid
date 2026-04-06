@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Linux (uinput is Linux-only — this is intentional, not a gap)
-- Python 3.9+
+- Python 3.11+
 - `parecord` for recording live PPM audio (`pulseaudio-utils` package)
 - RC transmitter with PPM trainer port + 3.5 mm cable to Line In
 
@@ -39,7 +39,7 @@ controls during the recording so the decoder test can verify each channel.
 ## Coding style
 
 - **stdlib only** — no external runtime dependencies. This is a deliberate
-  design choice so the tool works anywhere Python 3.9+ is available without a
+  design choice so the tool works anywhere Python 3.11+ is available without a
   `pip install`.
 - PEP 8 formatting.
 - Use `# MARK: - Section` comments to delimit logical sections within a file.

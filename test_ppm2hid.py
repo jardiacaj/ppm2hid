@@ -196,8 +196,6 @@ class TestPpmDecoder(unittest.TestCase):
 
             pressed  = any(v > _PROFILE.button_threshold_us for v in values)
             released = any(v <= _PROFILE.button_threshold_us for v in values)
-            lo, hi   = min(values), max(values)
-
             self.assertTrue(
                 pressed,
                 f"ch{ch_index+1} (button) was never pressed "

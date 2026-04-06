@@ -32,7 +32,7 @@ import time
 import wave
 
 sys.path.insert(0, os.path.dirname(__file__))
-from ppm2hid import discover_ppm_source, DEFAULT_AUDIO_SAMPLE_RATE
+from ppm2hid import discover_ppm_source
 
 TESTDATA_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'testdata')
 DEFAULT_RATE  = 192_000
@@ -121,7 +121,7 @@ def main():
         elapsed  = time.monotonic() - start_time
         mb       = bytes_written / 1_048_576
         print(f'\n\nSaved {elapsed:.1f} s  ({mb:.1f} MB)  →  {output_path}')
-        print(f'\nReplay with:')
+        print('\nReplay with:')
         print(f'  python ppm2hid.py --file {output_path}')
         sys.exit(0)
 

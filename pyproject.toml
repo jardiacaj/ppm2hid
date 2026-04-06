@@ -31,3 +31,12 @@ Homepage = "https://github.com/jardiacaj/ppm2hid"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["ppm2hid*"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E501",  # line too long — not enforced (some arg/format strings are inherently long)
+]

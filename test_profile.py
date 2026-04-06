@@ -5,7 +5,6 @@ test_profile.py – unit tests for load_profile() and the Profile class.
 No hardware or audio recordings required.
 """
 
-import io
 import os
 import sys
 import tempfile

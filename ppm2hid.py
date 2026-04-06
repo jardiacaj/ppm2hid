@@ -1566,7 +1566,7 @@ def main():
                     and last_frame_time is not None and not in_signal_gap
                     and time.monotonic() - last_frame_time > SIGNAL_NEUTRAL_THRESHOLD_S):
                 in_signal_gap = True
-                ui.log(f'*** SIGNAL LOST — joystick reset to neutral ***')
+                ui.log('*** SIGNAL LOST — joystick reset to neutral ***')
                 reset_joystick_to_neutral(uinput_fd, output_state, profile)
 
             # ── Real-time throttle (file mode only) ───────────────────────────
