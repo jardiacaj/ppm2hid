@@ -22,6 +22,8 @@ Record each with (transmitter ON, move only the target control):
   … etc.
 """
 
+from __future__ import annotations
+
 import os
 import struct
 import sys
@@ -38,7 +40,7 @@ _TESTDATA = os.path.join(os.path.dirname(__file__), 'testdata')
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
-def _load_samples(path):
+def _load_samples(path: str) -> tuple[list[int], int]:
     """Return (left-channel int16 samples, sample_rate) from a stereo WAV."""
     with wave.open(path, 'rb') as wf:
         raw  = wf.readframes(wf.getnframes())
@@ -46,7 +48,7 @@ def _load_samples(path):
     return [struct.unpack_from('<h', raw, o)[0] for o in range(0, len(raw) - 3, 4)], rate
 
 
-def _decode_channel(path, ch_index):
+def _decode_channel(path: str, ch_index: int) -> list[int]:
     """Decode all frames from *path* and return the values for *ch_index*."""
     samples, rate = _load_samples(path)
     decoder = PpmDecoder(max_channels=len(_PROFILE.channel_map), sample_rate=rate)
@@ -62,7 +64,7 @@ def _decode_channel(path, ch_index):
 
 _AXIS_SATURATION = 0.80   # must reach within this fraction of full range
 
-def _check_axis_full_range(tc, values, label):
+def _check_axis_full_range(tc: unittest.TestCase, values: list[int], label: str) -> None:
     required_span = int((_PROFILE.axis_max_us - _PROFILE.axis_min_us) * _AXIS_SATURATION)
     span = max(values) - min(values)
     lo, hi = min(values), max(values)
@@ -81,7 +83,7 @@ def _check_axis_full_range(tc, values, label):
     )
 
 
-def _check_button_toggled(tc, values, label):
+def _check_button_toggled(tc: unittest.TestCase, values: list[int], label: str) -> None:
     pressed  = any(v > _PROFILE.button_threshold_us for v in values)
     released = any(v <= _PROFILE.button_threshold_us for v in values)
     tc.assertTrue(pressed,
@@ -90,7 +92,7 @@ def _check_button_toggled(tc, values, label):
                   f'{label}: button never released (no value ≤ {_PROFILE.button_threshold_us} µs)')
 
 
-def _check_slider_all_positions(tc, values, label):
+def _check_slider_all_positions(tc: unittest.TestCase, values: list[int], label: str) -> None:
     saw_lo  = any(v < _PROFILE.slider_low_threshold_us for v in values)
     saw_mid = any(_PROFILE.slider_low_threshold_us <= v <= _PROFILE.slider_high_threshold_us for v in values)
     saw_hi  = any(v > _PROFILE.slider_high_threshold_us for v in values)
@@ -116,7 +118,7 @@ class _SweepMixin:
     """
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         if not os.path.exists(cls.RECORDING_PATH):
             raise FileNotFoundError(
                 f'Recording not found: {cls.RECORDING_PATH}\n'
@@ -139,7 +141,7 @@ class TestCh01SteeringSweep(_SweepMixin, unittest.TestCase):
     RECORDING_PATH = os.path.join(_TESTDATA, 'ch01_sweep.wav')
     CHANNEL_INDEX  = 0
 
-    def test_full_range(self):
+    def test_full_range(self) -> None:
         _check_axis_full_range(self, self.values, 'ch1 (steering)')
 
 
@@ -148,7 +150,7 @@ class TestCh02ThrottleSweep(_SweepMixin, unittest.TestCase):
     RECORDING_PATH = os.path.join(_TESTDATA, 'ch02_sweep.wav')
     CHANNEL_INDEX  = 1
 
-    def test_full_range(self):
+    def test_full_range(self) -> None:
         _check_axis_full_range(self, self.values, 'ch2 (throttle)')
 
 
@@ -157,7 +159,7 @@ class TestCh03ButtonSweep(_SweepMixin, unittest.TestCase):
     RECORDING_PATH = os.path.join(_TESTDATA, 'ch03_sweep.wav')
     CHANNEL_INDEX  = 2
 
-    def test_pressed_and_released(self):
+    def test_pressed_and_released(self) -> None:
         _check_button_toggled(self, self.values, 'ch3')
 
 
@@ -166,7 +168,7 @@ class TestCh04ButtonSweep(_SweepMixin, unittest.TestCase):
     RECORDING_PATH = os.path.join(_TESTDATA, 'ch04_sweep.wav')
     CHANNEL_INDEX  = 3
 
-    def test_pressed_and_released(self):
+    def test_pressed_and_released(self) -> None:
         _check_button_toggled(self, self.values, 'ch4')
 
 
@@ -175,7 +177,7 @@ class TestCh05AuxAxisSweep(_SweepMixin, unittest.TestCase):
     RECORDING_PATH = os.path.join(_TESTDATA, 'ch05_sweep.wav')
     CHANNEL_INDEX  = 4
 
-    def test_full_range(self):
+    def test_full_range(self) -> None:
         _check_axis_full_range(self, self.values, 'ch5 (aux axis)')
 
 
@@ -184,7 +186,7 @@ class TestCh06AuxAxisSweep(_SweepMixin, unittest.TestCase):
     RECORDING_PATH = os.path.join(_TESTDATA, 'ch06_sweep.wav')
     CHANNEL_INDEX  = 5
 
-    def test_full_range(self):
+    def test_full_range(self) -> None:
         _check_axis_full_range(self, self.values, 'ch6 (aux axis)')
 
 
@@ -193,7 +195,7 @@ class TestCh07SliderSweep(_SweepMixin, unittest.TestCase):
     RECORDING_PATH = os.path.join(_TESTDATA, 'ch07_sweep.wav')
     CHANNEL_INDEX  = 6
 
-    def test_all_positions(self):
+    def test_all_positions(self) -> None:
         _check_slider_all_positions(self, self.values, 'ch7 (slider)')
 
 
@@ -202,7 +204,7 @@ class TestCh08ButtonSweep(_SweepMixin, unittest.TestCase):
     RECORDING_PATH = os.path.join(_TESTDATA, 'ch08_sweep.wav')
     CHANNEL_INDEX  = 7
 
-    def test_pressed_and_released(self):
+    def test_pressed_and_released(self) -> None:
         _check_button_toggled(self, self.values, 'ch8')
 
 

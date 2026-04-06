@@ -12,6 +12,8 @@ Recording required: testdata/noise_tx_off.wav
    Run 'pactl list sources short' to find the Line In source name.)
 """
 
+from __future__ import annotations
+
 import os
 import struct
 import sys
@@ -32,7 +34,7 @@ _SKIP_MSG = (
 )
 
 
-def _load_stereo_samples(path):
+def _load_stereo_samples(path: str) -> tuple[list[int], list[int], int]:
     """Return (left_samples, right_samples, sample_rate) from a stereo WAV."""
     with wave.open(path, 'rb') as wf:
         raw  = wf.readframes(wf.getnframes())
@@ -46,7 +48,7 @@ class TestNoiseRejection(unittest.TestCase):
     """Decoder with default hysteresis must be silent when the transmitter is off."""
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         if not os.path.exists(RECORDING_PATH):
             raise FileNotFoundError(_SKIP_MSG)
         cls.left, cls.right, cls.sample_rate = _load_stereo_samples(RECORDING_PATH)
@@ -55,7 +57,7 @@ class TestNoiseRejection(unittest.TestCase):
         decoder = PpmDecoder(sample_rate=self.sample_rate)
         return [f for s in samples if (f := decoder.feed(s)) is not None]
 
-    def test_no_frames_left_channel(self):
+    def test_no_frames_left_channel(self) -> None:
         """Left channel noise must not produce any PPM frames."""
         frames = self._decode(self.left)
         self.assertEqual(
@@ -65,7 +67,7 @@ class TestNoiseRejection(unittest.TestCase):
             f'the recording was made with the transmitter on',
         )
 
-    def test_no_frames_right_channel(self):
+    def test_no_frames_right_channel(self) -> None:
         """Right channel noise must not produce any PPM frames."""
         frames = self._decode(self.right)
         self.assertEqual(

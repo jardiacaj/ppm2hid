@@ -16,6 +16,8 @@ These tests do NOT assert stick saturation or button presses — the focus is
 entirely on drop detection and recovery, not control coverage.
 """
 
+from __future__ import annotations
+
 import os
 import struct
 import sys
@@ -35,7 +37,7 @@ GAP_THRESHOLD_PERIODS = 5
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _load_left_channel_samples(path):
+def _load_left_channel_samples(path: str) -> tuple[list[int], int]:
     """Read a .wav stereo file and return (left-channel samples, sample_rate)."""
     with wave.open(path, 'rb') as wf:
         raw         = wf.readframes(wf.getnframes())
@@ -47,7 +49,8 @@ def _load_left_channel_samples(path):
     return samples, sample_rate
 
 
-def _decode_with_sample_indices(samples, sample_rate):
+def _decode_with_sample_indices(samples: list[int],
+                                sample_rate: int) -> list[tuple[int, list[int]]]:
     """
     Decode all samples through PpmDecoder and return a list of
     (sample_index, frame) for every complete frame decoded.
@@ -67,7 +70,7 @@ def _decode_with_sample_indices(samples, sample_rate):
 class TestPpmBadCable(unittest.TestCase):
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         if not os.path.exists(RECORDING_PATH):
             raise FileNotFoundError(f'Recording not found: {RECORDING_PATH}')
 
@@ -89,7 +92,7 @@ class TestPpmBadCable(unittest.TestCase):
         # Nominal frame period in samples at a healthy ~50 Hz
         cls.nominal_period_samples = sample_rate / 50.0
 
-    def test_some_frames_decoded(self):
+    def test_some_frames_decoded(self) -> None:
         """At least 100 frames must be decoded despite the intermittent signal."""
         self.assertGreaterEqual(
             len(self.frames), 100,
@@ -97,7 +100,7 @@ class TestPpmBadCable(unittest.TestCase):
             f'recording — expected ≥ 100 even with a bad cable'
         )
 
-    def test_signal_drops_present(self):
+    def test_signal_drops_present(self) -> None:
         """
         Average frame rate must be well below the clean-signal minimum (40 Hz),
         confirming that the bad cable caused significant signal loss.
@@ -110,7 +113,7 @@ class TestPpmBadCable(unittest.TestCase):
             f'({clean_min} Hz) — expected fewer frames due to signal drops'
         )
 
-    def test_channel_count(self):
+    def test_channel_count(self) -> None:
         """
         Most decoded frames must have the expected channel count.  A small
         proportion of partial frames is acceptable — the bad cable can cut the
@@ -127,7 +130,7 @@ class TestPpmBadCable(unittest.TestCase):
             if partial else ''
         )
 
-    def test_values_in_range(self):
+    def test_values_in_range(self) -> None:
         """All decoded µs values must lie within [_PROFILE.axis_min_us, _PROFILE.axis_max_us]."""
         violations = []
         for frame_index, frame in enumerate(self.frames):
@@ -141,7 +144,7 @@ class TestPpmBadCable(unittest.TestCase):
             if violations else ''
         )
 
-    def test_signal_gaps_detected(self):
+    def test_signal_gaps_detected(self) -> None:
         """
         Multiple gaps longer than GAP_THRESHOLD_PERIODS × nominal frame period
         must be present, confirming the bad cable caused actual signal interruptions.
@@ -159,7 +162,7 @@ class TestPpmBadCable(unittest.TestCase):
             f'expected ≥ 5 with a bad cable'
         )
 
-    def test_decoder_recovers_throughout(self):
+    def test_decoder_recovers_throughout(self) -> None:
         """
         Frames must appear in each quarter of the recording, confirming the
         decoder re-synchronises after every signal interruption.
@@ -179,7 +182,7 @@ class TestPpmBadCable(unittest.TestCase):
                 f'after signal drops'
             )
 
-    def test_decoder_stability_when_signal_present(self):
+    def test_decoder_stability_when_signal_present(self) -> None:
         """
         Between consecutive full-channel frames with no gap in between, axis
         channels must not jump more than 200 µs.  Any pair of frames separated

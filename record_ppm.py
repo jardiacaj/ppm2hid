@@ -22,6 +22,8 @@ Usage examples:
     python record_ppm.py --device alsa_input.X   # skip auto-detect
 """
 
+from __future__ import annotations
+
 import argparse
 import datetime
 import os
@@ -39,7 +41,7 @@ DEFAULT_RATE  = 192_000
 CHUNK_BYTES   = 8192
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser(
         description='Record PPM audio to a WAV file for use as test data',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -115,7 +117,7 @@ def main():
     start_time    = time.monotonic()
     bytes_written = 0
 
-    def finish(signum=None, frame=None):
+    def finish(signum: int | None = None, frame: object = None) -> None:
         proc.terminate()
         proc.wait()
         elapsed  = time.monotonic() - start_time

@@ -20,6 +20,8 @@ Coverage gaps in this recording (not tested):
   ch9/ch10   – transmitter confirmed to send 8 channels only
 """
 
+from __future__ import annotations
+
 import os
 import struct
 import sys
@@ -41,7 +43,7 @@ _EXERCISED_BUTTON_INDICES = {2, 3}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _load_left_channel_samples(path):
+def _load_left_channel_samples(path: str) -> tuple[list[int], int]:
     """
     Read a .wav or raw s16le stereo file and return (left-channel samples, sample_rate).
     For .wav the sample rate is read from the file header.
@@ -61,7 +63,7 @@ def _load_left_channel_samples(path):
     return samples, sample_rate
 
 
-def _decode_all_frames(samples, sample_rate):
+def _decode_all_frames(samples: list[int], sample_rate: int) -> list[list[int]]:
     """Run every sample through PpmDecoder and collect complete frames."""
     decoder = PpmDecoder(max_channels=len(_PROFILE.channel_map), sample_rate=sample_rate)
     frames = []
@@ -72,7 +74,7 @@ def _decode_all_frames(samples, sample_rate):
     return frames
 
 
-def _channel_indices_of_type(channel_type):
+def _channel_indices_of_type(channel_type: str) -> list[int]:
     return [i for i, ch in enumerate(_PROFILE.channel_map) if ch[0] == channel_type]
 
 
@@ -81,7 +83,7 @@ def _channel_indices_of_type(channel_type):
 class TestPpmDecoder(unittest.TestCase):
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         if not os.path.exists(RECORDING_PATH):
             raise FileNotFoundError(
                 f"Recording not found: {RECORDING_PATH}\n"
@@ -99,7 +101,7 @@ class TestPpmDecoder(unittest.TestCase):
                 "and the signal is on the left channel."
             )
 
-    def test_frame_count(self):
+    def test_frame_count(self) -> None:
         """At 40+ Hz we expect at least 40 * duration_s frames."""
         minimum_expected = 40 * self.actual_duration
         count = len(self.frames)
@@ -109,13 +111,13 @@ class TestPpmDecoder(unittest.TestCase):
             f"Check that the transmitter was on during the recording."
         )
 
-    def test_frame_rate(self):
+    def test_frame_rate(self) -> None:
         """Frame rate should be between 40 and 90 Hz."""
         rate = len(self.frames) / self.actual_duration
         self.assertGreaterEqual(rate, 40, f"Frame rate too low: {rate:.1f} Hz")
         self.assertLessEqual(rate, 90, f"Frame rate too high: {rate:.1f} Hz")
 
-    def test_channel_count(self):
+    def test_channel_count(self) -> None:
         """Every frame should contain exactly as many channels as _PROFILE.channel_map."""
         expected = len(_PROFILE.channel_map)
         bad = [i for i, f in enumerate(self.frames) if len(f) != expected]
@@ -126,7 +128,7 @@ class TestPpmDecoder(unittest.TestCase):
             if bad else ""
         )
 
-    def test_values_in_range(self):
+    def test_values_in_range(self) -> None:
         """All decoded µs values must lie within [_PROFILE.axis_min_us, _PROFILE.axis_max_us]."""
         violations = []
         for frame_index, frame in enumerate(self.frames):
@@ -140,7 +142,7 @@ class TestPpmDecoder(unittest.TestCase):
             if violations else ""
         )
 
-    def test_axes_saturated(self):
+    def test_axes_saturated(self) -> None:
         """
         Axis channels (ch1, ch5, ch6) should have visited at least 80 % of
         the declared range during the recording.
@@ -159,7 +161,7 @@ class TestPpmDecoder(unittest.TestCase):
                 f"Was the stick moved to full saturation?"
             )
 
-    def test_throttle_both_directions(self):
+    def test_throttle_both_directions(self) -> None:
         """
         ch2 is the throttle stick.  Over the recording it should have gone both
         above and below centre by at least 30 % of the half-range.
@@ -183,7 +185,7 @@ class TestPpmDecoder(unittest.TestCase):
             f"(max below: {max_below} µs)"
         )
 
-    def test_buttons_toggled(self):
+    def test_buttons_toggled(self) -> None:
         """
         Each exercised button channel must have been both pressed and released.
         Unexercised buttons (ch8 in this recording) are skipped.
@@ -207,7 +209,7 @@ class TestPpmDecoder(unittest.TestCase):
                 f"(all values > {_PROFILE.button_threshold_us} µs)"
             )
 
-    def test_slider_mid_detected(self):
+    def test_slider_mid_detected(self) -> None:
         """
         ch7 slider mid position must have been seen.  LO and HI are not verified
         because the slider was not moved through all positions in this recording.
@@ -221,7 +223,7 @@ class TestPpmDecoder(unittest.TestCase):
             f"never seen (range was {min(values)}–{max(values)} µs)"
         )
 
-    def test_decoder_stability(self):
+    def test_decoder_stability(self) -> None:
         """
         Axis channels should not jump more than 200 µs between consecutive frames.
         Button/slider channels are excluded — their 800 µs swings are intentional.

@@ -22,6 +22,8 @@ Channel mapping
   ch8  → BTN_SW_CH8  (button)
 """
 
+from __future__ import annotations
+
 import argparse
 import fcntl
 import os
@@ -33,6 +35,9 @@ import subprocess
 import sys
 import time
 import wave
+from typing import IO, Any
+
+__version__ = '0.1.0'
 
 
 # MARK: - Linux input subsystem constants
@@ -118,7 +123,7 @@ _INPUT_CODE_NAMES: dict = {
 }
 
 
-def _resolve_code(value):
+def _resolve_code(value: int | str) -> int:
     """
     Resolve an input event code name (str) or raw integer to its integer value.
     Raises ValueError for unknown string names.
@@ -194,12 +199,13 @@ class PpmDecoder:
       last_debug_lines – list of strings for the debug display (when debug=True)
     """
 
-    def __init__(self, max_channels=10, debug=False,
-                 sample_rate=DEFAULT_AUDIO_SAMPLE_RATE, threshold=DEFAULT_AUDIO_THRESHOLD,
-                 hysteresis=DEFAULT_AUDIO_HYSTERESIS,
-                 sync_min_us=3_000, sync_max_us=50_000,
-                 channel_min_us=500, channel_max_us=2_100,
-                 axis_min_us=1_100, axis_max_us=1_900):
+    def __init__(self, max_channels: int = 10, debug: bool = False,
+                 sample_rate: int = DEFAULT_AUDIO_SAMPLE_RATE,
+                 threshold: int = DEFAULT_AUDIO_THRESHOLD,
+                 hysteresis: int = DEFAULT_AUDIO_HYSTERESIS,
+                 sync_min_us: int = 3_000, sync_max_us: int = 50_000,
+                 channel_min_us: int = 500, channel_max_us: int = 2_100,
+                 axis_min_us: int = 1_100, axis_max_us: int = 1_900) -> None:
         self.max_channels    = max_channels
         self._debug          = debug
         self._sample_rate    = sample_rate
@@ -230,7 +236,7 @@ class PpmDecoder:
         # Debug lines ready for the caller to display
         self.last_debug_lines  = []
 
-    def feed(self, sample):
+    def feed(self, sample: int) -> list[int] | None:
         """
         Process one int16 audio sample.
         Returns a list of µs values when a frame completes, else None.
@@ -263,7 +269,7 @@ class PpmDecoder:
 
         return self._process_completed_pulse(completed_level, completed_length)
 
-    def _process_completed_pulse(self, pulse_type, pulse_length_samples):
+    def _process_completed_pulse(self, pulse_type: str, pulse_length_samples: int) -> list[int] | None:
         """
         Evaluate a just-completed pulse and update decoder state.
 
@@ -349,10 +355,10 @@ class PpmDecoder:
 
         return None
 
-    def _smp_to_us(self, samples):
+    def _smp_to_us(self, samples: int) -> int:
         return samples * 1_000_000 // self._sample_rate
 
-    def _build_debug_lines(self, sync_smp):
+    def _build_debug_lines(self, sync_smp: int) -> list[str]:
         """Return a fixed-height list of debug strings for the current frame."""
         FIXED   = self.max_channels + 2
         sync_us = self._smp_to_us(sync_smp)
@@ -402,17 +408,17 @@ class TerminalUI:
     overwrites the fixed rows in place.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._initialized = False
         self._height      = 0
         self._fixed_rows  = 0
         self._dbg_n_lines = 0   # cursor-up counter for non-TTY debug rendering
 
     @property
-    def active(self):
+    def active(self) -> bool:
         return self._initialized
 
-    def start(self, fixed_rows):
+    def start(self, fixed_rows: int) -> None:
         """Reserve `fixed_rows` at the bottom; confine scrolling to the rest."""
         if not sys.stdout.isatty() or fixed_rows == 0:
             return
@@ -435,7 +441,7 @@ class TerminalUI:
         sys.stdout.write(f'\033[{log_rows};1H')
         sys.stdout.flush()
 
-    def log(self, msg):
+    def log(self, msg: str) -> None:
         """Write a message to the scrolling log area (or stdout if not active)."""
         if not self._initialized:
             print(msg, flush=True)
@@ -444,7 +450,7 @@ class TerminalUI:
         sys.stdout.write(f'\r{msg}\033[K\n')
         sys.stdout.flush()
 
-    def update_status(self, lines):
+    def update_status(self, lines: list[str]) -> None:
         """Overwrite the fixed status rows at the bottom with `lines`."""
         if not self._initialized:
             return
@@ -458,7 +464,7 @@ class TerminalUI:
         sys.stdout.write(''.join(out))
         sys.stdout.flush()
 
-    def stop(self):
+    def stop(self) -> None:
         """Reset scroll region and move cursor below the status area."""
         if not self._initialized:
             return
@@ -467,7 +473,7 @@ class TerminalUI:
         sys.stdout.flush()
         self._initialized = False
 
-    def render_debug_stderr(self, lines):
+    def render_debug_stderr(self, lines: list[str]) -> None:
         """Non-TTY fallback: write debug lines to stderr using cursor-up overwrite."""
         if self._dbg_n_lines:
             sys.stderr.write(f'\033[{self._dbg_n_lines}F')
@@ -479,7 +485,7 @@ class TerminalUI:
 
 # MARK: - uinput device management
 
-def open_uinput_joystick(profile=None):
+def open_uinput_joystick(profile: Profile | None = None) -> int:
     """
     Create a virtual joystick via /dev/uinput.
     Registers every axis and button code declared in the profile's channel map.
@@ -555,7 +561,7 @@ def open_uinput_joystick(profile=None):
     return fd
 
 
-def destroy_uinput_joystick(fd):
+def destroy_uinput_joystick(fd: int) -> None:
     """Destroy the virtual joystick and close the file descriptor."""
     try:
         fcntl.ioctl(fd, UI_DEV_DESTROY)
@@ -564,13 +570,13 @@ def destroy_uinput_joystick(fd):
     os.close(fd)
 
 
-def _write_input_event(fd, event_type, event_code, event_value):
+def _write_input_event(fd: int, event_type: int, event_code: int, event_value: int) -> None:
     # Timestamps (tv_sec, tv_usec) are passed as 0; the kernel overwrites them.
     raw = struct.pack(INPUT_EVENT_STRUCT, 0, 0, event_type, event_code, event_value)
     os.write(fd, raw)
 
 
-def _flush_events(fd):
+def _flush_events(fd: int) -> None:
     # EV_SYN / SYN_REPORT tells the kernel to deliver all buffered events atomically.
     _write_input_event(fd, EV_SYN, SYN_REPORT, 0)
 
@@ -580,7 +586,7 @@ def _flush_events(fd):
 class ChannelOutputState:
     """Tracks last-emitted values to apply deadband and avoid redundant events."""
 
-    def __init__(self, channel_map=None):
+    def __init__(self, channel_map: list | None = None) -> None:
         if channel_map is None:
             channel_map = Profile().channel_map
         abs_codes = set()
@@ -599,7 +605,7 @@ class ChannelOutputState:
         self.button_states = {code: False for code in btn_codes}
 
 
-def reset_joystick_to_neutral(fd, state, profile=None):
+def reset_joystick_to_neutral(fd: int, state: ChannelOutputState, profile: Profile | None = None) -> None:
     """
     Send axis-centre and button-released events for every mapped control,
     then flush with EV_SYN.  Used to put the virtual joystick in a safe resting
@@ -624,7 +630,8 @@ def reset_joystick_to_neutral(fd, state, profile=None):
     _flush_events(fd)
 
 
-def emit_channel_events(fd, state, ppm_frame, profile=None):
+def emit_channel_events(fd: int, state: ChannelOutputState, ppm_frame: list[int],
+                        profile: Profile | None = None) -> list[tuple[int, int, bool]]:
     """
     Convert a decoded PPM frame into uinput events and flush with EV_SYN.
 
@@ -699,15 +706,18 @@ def emit_channel_events(fd, state, ppm_frame, profile=None):
 
 _saved_input_sources = {}
 
-def _amixer_find_input_source_numids(alsa_card):
+def _amixer_find_input_source_numids(alsa_card: int) -> list[int]:
     """
     Return a list of numids for 'Input Source' controls on the given card,
-    one per capture channel, in index order.
+    one per capture channel, in index order.  Returns [] if amixer is not found.
     """
-    result = subprocess.run(
-        ['amixer', '-c', str(alsa_card), 'controls'],
-        capture_output=True, text=True,
-    )
+    try:
+        result = subprocess.run(
+            ['amixer', '-c', str(alsa_card), 'controls'],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        return []
     numids = []
     for line in result.stdout.splitlines():
         if "name='Input Source'" in line:
@@ -716,18 +726,24 @@ def _amixer_find_input_source_numids(alsa_card):
                     numids.append(int(part.split('=')[1]))
     return sorted(numids)
 
-def _amixer_cset_numid(alsa_card, numid, value):
-    subprocess.run(
-        ['amixer', '-c', str(alsa_card), 'cset', f'numid={numid}', value],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+def _amixer_cset_numid(alsa_card: int, numid: int, value: str) -> None:
+    try:
+        subprocess.run(
+            ['amixer', '-c', str(alsa_card), 'cset', f'numid={numid}', value],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        pass
 
-def _amixer_cget_numid(alsa_card, numid):
+def _amixer_cget_numid(alsa_card: int, numid: int) -> str | None:
     """Return the current enum item name for the given numid."""
-    result = subprocess.run(
-        ['amixer', '-c', str(alsa_card), 'cget', f'numid={numid}'],
-        capture_output=True, text=True,
-    )
+    try:
+        result = subprocess.run(
+            ['amixer', '-c', str(alsa_card), 'cget', f'numid={numid}'],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        return None
     items = {}
     current_index = None
     for line in result.stdout.splitlines():
@@ -743,7 +759,7 @@ def _amixer_cget_numid(alsa_card, numid):
         return items.get(current_index)
     return None
 
-def switch_alsa_input_to_line_in(alsa_card=0):
+def switch_alsa_input_to_line_in(alsa_card: int = 0) -> None:
     """Save current ALSA Input Source settings, then switch all channels to Line."""
     numids = _amixer_find_input_source_numids(alsa_card)
     for i, numid in enumerate(numids):
@@ -752,7 +768,7 @@ def switch_alsa_input_to_line_in(alsa_card=0):
             _saved_input_sources[i] = (numid, original)
         _amixer_cset_numid(alsa_card, numid, 'Line')
 
-def restore_alsa_input_sources(alsa_card=0):
+def restore_alsa_input_sources(alsa_card: int = 0) -> None:
     """Restore ALSA Input Source settings saved before we changed them."""
     fallback_defaults = ['Rear Mic', 'Front Mic']
     numids = _amixer_find_input_source_numids(alsa_card)
@@ -766,7 +782,7 @@ def restore_alsa_input_sources(alsa_card=0):
 
 # MARK: - Audio file helpers (WAV + raw)
 
-def _validate_wav(wf):
+def _validate_wav(wf: wave.Wave_read) -> None:
     """Raise wave.Error if wf is not s16le stereo."""
     if wf.getnchannels() != 2:
         raise wave.Error(f'expected stereo (2 ch), got {wf.getnchannels()}')
@@ -777,23 +793,23 @@ def _validate_wav(wf):
 class _WavSource:
     """Wraps wave.Wave_read to expose a .read(n_bytes) interface."""
 
-    def __init__(self, wf):
+    def __init__(self, wf: wave.Wave_read) -> None:
         self._wf = wf
         self._bytes_per_frame = wf.getnchannels() * wf.getsampwidth()
 
     @property
-    def sample_rate(self):
+    def sample_rate(self) -> int:
         return self._wf.getframerate()
 
-    def read(self, n_bytes):
+    def read(self, n_bytes: int) -> bytes:
         n_frames = max(1, n_bytes // self._bytes_per_frame)
         return self._wf.readframes(n_frames)
 
-    def close(self):
+    def close(self) -> None:
         self._wf.close()
 
 
-def open_audio_file(path, hint_rate=DEFAULT_AUDIO_SAMPLE_RATE):
+def open_audio_file(path: str, hint_rate: int = DEFAULT_AUDIO_SAMPLE_RATE) -> tuple[Any, int]:
     """
     Open a .wav or raw s16le stereo audio file.
     Returns (source, actual_sample_rate).
@@ -806,7 +822,7 @@ def open_audio_file(path, hint_rate=DEFAULT_AUDIO_SAMPLE_RATE):
     return open(path, 'rb'), hint_rate
 
 
-def _get_file_sample_rate(path, hint_rate=DEFAULT_AUDIO_SAMPLE_RATE):
+def _get_file_sample_rate(path: str, hint_rate: int = DEFAULT_AUDIO_SAMPLE_RATE) -> int:
     """Return the sample rate from a .wav header, or hint_rate for raw files."""
     if path.lower().endswith('.wav'):
         try:
@@ -819,7 +835,8 @@ def _get_file_sample_rate(path, hint_rate=DEFAULT_AUDIO_SAMPLE_RATE):
 
 # MARK: - Audio capture via PipeWire/PulseAudio
 
-def start_audio_capture(pipewire_source_name, sample_rate=DEFAULT_AUDIO_SAMPLE_RATE):
+def start_audio_capture(pipewire_source_name: str,
+                        sample_rate: int = DEFAULT_AUDIO_SAMPLE_RATE) -> subprocess.Popen[bytes]:
     """Launch parecord and return the Popen handle (raw s16le stereo)."""
     return subprocess.Popen(
         [
@@ -838,7 +855,7 @@ def start_audio_capture(pipewire_source_name, sample_rate=DEFAULT_AUDIO_SAMPLE_R
 
 # MARK: - PPM source auto-discovery
 
-def list_pipewire_sources():
+def list_pipewire_sources() -> list[str]:
     """Return non-monitor PipeWire/PulseAudio source names via pactl."""
     try:
         result = subprocess.run(
@@ -857,9 +874,10 @@ def list_pipewire_sources():
     return sources
 
 
-def probe_source_for_ppm(source_name, sample_rate=DEFAULT_AUDIO_SAMPLE_RATE,
-                          threshold=DEFAULT_AUDIO_THRESHOLD, hysteresis=DEFAULT_AUDIO_HYSTERESIS,
-                          duration_s=0.5):
+def probe_source_for_ppm(source_name: str, sample_rate: int = DEFAULT_AUDIO_SAMPLE_RATE,
+                          threshold: int = DEFAULT_AUDIO_THRESHOLD,
+                          hysteresis: int = DEFAULT_AUDIO_HYSTERESIS,
+                          duration_s: float = 0.5) -> tuple[int, bool] | None:
     """
     Capture a short burst from *source_name* and return the channel index
     (0 = left, 1 = right) where a valid PPM frame is detected, or None if no
@@ -929,9 +947,10 @@ def probe_source_for_ppm(source_name, sample_rate=DEFAULT_AUDIO_SAMPLE_RATE,
     return None
 
 
-def probe_file_for_ppm(file_path, sample_rate=DEFAULT_AUDIO_SAMPLE_RATE,
-                        threshold=DEFAULT_AUDIO_THRESHOLD, hysteresis=DEFAULT_AUDIO_HYSTERESIS,
-                        duration_s=0.5):
+def probe_file_for_ppm(file_path: str, sample_rate: int = DEFAULT_AUDIO_SAMPLE_RATE,
+                        threshold: int = DEFAULT_AUDIO_THRESHOLD,
+                        hysteresis: int = DEFAULT_AUDIO_HYSTERESIS,
+                        duration_s: float = 0.5) -> tuple[int, bool] | None:
     """
     Read the first *duration_s* seconds of a .wav or raw s16le stereo file and
     return (channel, invert) where a valid PPM frame is detected, or None if no
@@ -965,8 +984,9 @@ def probe_file_for_ppm(file_path, sample_rate=DEFAULT_AUDIO_SAMPLE_RATE,
     return None
 
 
-def discover_ppm_source(sample_rate=DEFAULT_AUDIO_SAMPLE_RATE, threshold=DEFAULT_AUDIO_THRESHOLD,
-                         hysteresis=DEFAULT_AUDIO_HYSTERESIS):
+def discover_ppm_source(sample_rate: int = DEFAULT_AUDIO_SAMPLE_RATE,
+                         threshold: int = DEFAULT_AUDIO_THRESHOLD,
+                         hysteresis: int = DEFAULT_AUDIO_HYSTERESIS) -> tuple[str | None, int | None, bool]:
     """
     Enumerate PipeWire/PulseAudio sources and return ``(source_name, channel, invert)``
     for the first source that carries a valid PPM signal (channel 0 = left, 1 = right;
@@ -996,7 +1016,7 @@ def discover_ppm_source(sample_rate=DEFAULT_AUDIO_SAMPLE_RATE, threshold=DEFAULT
 
 # MARK: - Display helpers
 
-def _axis_bar(value_us, width=6, axis_min=1_100, axis_max=1_900):
+def _axis_bar(value_us: int, width: int = 6, axis_min: int = 1_100, axis_max: int = 1_900) -> str:
     """Fixed-width ASCII bar showing position within [axis_min, axis_max]."""
     fraction = (value_us - axis_min) / (axis_max - axis_min)
     filled   = int(max(0.0, min(1.0, fraction)) * width)
@@ -1013,7 +1033,7 @@ class Profile:
     Use ``load_profile(path)`` to override from a TOML file.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.device_name              = ''
         # Signal timing — all in microseconds
         self.axis_min_us              = 1_100
@@ -1048,7 +1068,7 @@ class Profile:
         self.monitor_labels = ['STR', 'THR', ' c3', ' c4', ' RX', ' RY', ' c7', ' c8']
 
 
-def load_profile(path):
+def load_profile(path: str) -> Profile:
     """
     Load a TOML transmitter profile from *path* and return a Profile.
     Requires Python 3.11+ (tomllib).
@@ -1118,7 +1138,8 @@ def load_profile(path):
     return p
 
 
-def _build_monitor_line(ppm_frame, state=None, hz=0.0, profile=None):
+def _build_monitor_line(ppm_frame: list[int], state: ChannelOutputState | None = None,
+                        hz: float = 0.0, profile: Profile | None = None) -> str:
     """
     Return a compact one-line summary of all decoded controls.
 
@@ -1189,7 +1210,8 @@ def _build_monitor_line(ppm_frame, state=None, hz=0.0, profile=None):
     return ' '.join(parts) + hz_tag
 
 
-def _render_oscilloscope(samples, threshold=DEFAULT_AUDIO_THRESHOLD, width=72, height=7):
+def _render_oscilloscope(samples: list[int], threshold: int = DEFAULT_AUDIO_THRESHOLD,
+                          width: int = 72, height: int = 7) -> list[str]:
     """
     Render *samples* as a fixed-size ASCII oscilloscope waveform.
 
@@ -1256,11 +1278,12 @@ SIGNAL_NEUTRAL_THRESHOLD_S = 0.5
 OSCILLOSCOPE_HEIGHT = 7   # rows used by the --oscilloscope waveform display
 
 
-def main():
-    argument_parser = argparse.ArgumentParser(
+def _parse_args() -> argparse.Namespace:
+    """Build the CLI argument parser and return the parsed Namespace."""
+    ap = argparse.ArgumentParser(
         description='PPM RC transmitter audio input → Linux virtual joystick'
     )
-    source_group = argument_parser.add_mutually_exclusive_group()
+    source_group = ap.add_mutually_exclusive_group()
     source_group.add_argument(
         '-d', '--device', default=None,
         help='PipeWire/PulseAudio source device name (default: auto-detect)',
@@ -1269,71 +1292,71 @@ def main():
         '-f', '--file', default=None, metavar='PATH',
         help='Read from a raw s16le stereo recording instead of a live audio source',
     )
-    argument_parser.add_argument(
+    ap.add_argument(
         '-m', '--monitor', action='store_true',
         help='Show live channel values in a fixed status line',
     )
-    argument_parser.add_argument(
+    ap.add_argument(
         '--no-mixer', action='store_true',
         help="Don't modify the ALSA Input Source mixer control",
     )
-    argument_parser.add_argument(
+    ap.add_argument(
         '--no-joystick', action='store_true',
         help='Decode and display PPM frames without creating a virtual joystick '
              '(useful for testing without /dev/uinput access)',
     )
-    argument_parser.add_argument(
+    ap.add_argument(
         '--oscilloscope', action='store_true',
         help='Show an ASCII waveform of the raw audio for each decoded frame',
     )
-    argument_parser.add_argument(
+    ap.add_argument(
         '--no-realtime', action='store_true',
         help='With --file: consume the recording as fast as possible instead of '
              'at the original sample rate (default: real-time playback)',
     )
-    argument_parser.add_argument(
+    ap.add_argument(
         '--debug', action='store_true',
         help='Show raw pulse timing in a fixed debug display',
     )
-    argument_parser.add_argument(
+    ap.add_argument(
         '--threshold', type=int, default=DEFAULT_AUDIO_THRESHOLD,
         metavar='N',
         help=f'int16 midpoint for HIGH/LOW detection (default: {DEFAULT_AUDIO_THRESHOLD}); '
              f'adjust if the audio path has a DC offset',
     )
-    argument_parser.add_argument(
+    ap.add_argument(
         '--hysteresis', type=int, default=DEFAULT_AUDIO_HYSTERESIS,
         metavar='N',
         help=f'int16 dead zone around --threshold (default: {DEFAULT_AUDIO_HYSTERESIS}); '
              'signal must exceed threshold+N to register HIGH and drop below '
              'threshold-N to register LOW — filters noise when the transmitter is off',
     )
-    argument_parser.add_argument(
+    ap.add_argument(
         '--rate', type=int, default=DEFAULT_AUDIO_SAMPLE_RATE,
         metavar='HZ',
         help=f'Audio sample rate in Hz (default: {DEFAULT_AUDIO_SAMPLE_RATE}); '
              f'higher rates (96000, 192000) improve timing precision',
     )
-    argument_parser.add_argument(
+    ap.add_argument(
         '--config', default=None, metavar='PATH',
         help='TOML transmitter profile (default: built-in Absima CR10P mapping)',
     )
-    args = argument_parser.parse_args()
+    ap.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
+    return ap.parse_args()
 
-    profile = load_profile(args.config) if args.config else Profile()
 
-    if not args.no_joystick and not os.path.exists('/dev/uinput'):
-        sys.exit('error: /dev/uinput not found – is the uinput kernel module loaded?\n'
-                 '       use --no-joystick to run without creating a virtual device')
+def _setup_audio_source(
+    args: argparse.Namespace,
+) -> tuple[int, bool, int, str, bool]:
+    """
+    Probe or configure the audio source.
 
-    mixer_was_modified = False
-    audio_channel      = 0    # 0 = left, 1 = right
-    audio_invert       = False
-    audio_capture_proc = None
-    audio_file         = None
+    For --file mode: probes the recording for a PPM signal and detects channel/invert.
+    For live mode: optionally switches the ALSA mixer, then auto-detects or uses --device.
 
-    actual_rate = args.rate   # overridden below for .wav files
-
+    Returns (audio_channel, audio_invert, actual_rate, source_label, mixer_was_modified).
+    Calls sys.exit() if the source cannot be determined.
+    """
     if args.file:
         if not os.path.exists(args.file):
             sys.exit(f'error: file not found: {args.file}')
@@ -1349,27 +1372,213 @@ def main():
         ch_name  = 'left' if audio_channel == 0 else 'right'
         inv_note = ', inverted' if audio_invert else ''
         print(f'found ({ch_name} channel{inv_note})')
-        audio_source_label = args.file
-    else:
-        if not args.no_mixer:
-            print('Switching ALSA Input Source → Line In …')
-            switch_alsa_input_to_line_in()
-            mixer_was_modified = True
+        return audio_channel, audio_invert, actual_rate, args.file, False
 
+    # Live capture
+    mixer_was_modified = False
+    if not args.no_mixer:
+        print('Switching ALSA Input Source → Line In …')
+        switch_alsa_input_to_line_in()
+        mixer_was_modified = True
+
+    audio_channel = 0
+    audio_invert  = False
+    if args.device is None:
+        args.device, audio_channel, audio_invert = discover_ppm_source(
+            args.rate, args.threshold, args.hysteresis)
         if args.device is None:
-            args.device, audio_channel, audio_invert = discover_ppm_source(args.rate, args.threshold,
-                                                                             args.hysteresis)
-            if args.device is None:
-                sys.exit(
-                    'error: no PPM source detected automatically\n'
-                    '       specify one with --device (see: pactl list sources short)'
-                )
-        audio_source_label = args.device
+            sys.exit(
+                'error: no PPM source detected automatically\n'
+                '       specify one with --device (see: pactl list sources short)'
+            )
+    return audio_channel, audio_invert, args.rate, args.device, mixer_was_modified
 
-    uinput_fd = None
+
+def _decode_loop(
+    args: argparse.Namespace,
+    audio_source: IO[bytes],
+    audio_channel: int,
+    audio_invert: bool,
+    actual_rate: int,
+    ppm_decoder: PpmDecoder,
+    output_state: ChannelOutputState,
+    uinput_fd: int | None,
+    profile: Profile,
+    ui: TerminalUI,
+) -> None:
+    """
+    The main audio-decode-emit loop.
+
+    Reads audio chunks from *audio_source*, decodes PPM frames, emits uinput events,
+    and updates the terminal display.  Returns when the source is exhausted.
+    Callers should catch KeyboardInterrupt.
+    """
+    frames_decoded: int = 0
+    last_frame_time: float | None = None
+    in_signal_gap: bool = False
+    # Channel count stability locking
+    expected_ch_count: int | None = None
+    candidate_ch_count: int | None = None
+    stable_count: int = 0
+    # Oscilloscope buffering (only when --oscilloscope is active)
+    osc_buffer: list[int] = []
+    osc_frame_samples: list[int] = []
+
+    real_time_file: bool = bool(args.file and not args.no_realtime)
+
+    AUDIO_CHUNK_BYTES = 1024 * 4   # 1024 stereo frames × 4 bytes/frame (2ch × 2 bytes/sample)
+    chunk_duration_s  = AUDIO_CHUNK_BYTES / 4 / actual_rate   # wall-clock time per chunk
+    next_chunk_deadline = time.monotonic()
+
+    ui.log('Waiting for PPM signal … (Ctrl-C to quit)')
+    if real_time_file:
+        ui.log('Real-time playback enabled (--no-realtime to disable)')
+
+    while True:
+        raw_audio = audio_source.read(AUDIO_CHUNK_BYTES)
+        if not raw_audio:
+            ui.log('End of recording.' if args.file else 'Audio capture ended unexpectedly')
+            break
+
+        channel_byte_offset = audio_channel * 2
+        for byte_offset in range(0, len(raw_audio) - 3, 4):
+            sample = struct.unpack_from('<h', raw_audio, byte_offset + channel_byte_offset)[0]
+            if audio_invert:
+                sample = -sample
+            completed_frame = ppm_decoder.feed(sample)
+
+            if args.oscilloscope:
+                osc_buffer.append(sample)
+
+            if completed_frame is None:
+                continue
+
+            if args.oscilloscope:
+                osc_frame_samples = osc_buffer[:]
+                osc_buffer.clear()
+
+            # ── Signal gap detection ──────────────────────────────────────
+            now   = time.monotonic()
+            gap_s = (now - last_frame_time) if last_frame_time is not None else 0.0
+            last_frame_time = now
+
+            if gap_s > SIGNAL_GAP_THRESHOLD_S and not real_time_file:
+                ui.log(f'*** SIGNAL GAP {gap_s:.1f}s ***')
+                in_signal_gap = True
+            elif in_signal_gap:
+                ui.log('Signal restored')
+                in_signal_gap = False
+
+            # ── Channel count stability locking ───────────────────────────
+            # The decoder may emit short frames at start-up or after signal gaps
+            # (sync seen but fewer channels received).  Require CHANNEL_LOCK_FRAMES
+            # consecutive frames with the same count before accepting that count;
+            # then skip any frame that deviates from it.
+            ch_count = len(completed_frame)
+
+            if expected_ch_count is None:
+                if ch_count == candidate_ch_count:
+                    stable_count += 1
+                    if stable_count >= CHANNEL_LOCK_FRAMES:
+                        expected_ch_count = ch_count
+                        ui.log(f'Channel count locked: {ch_count}')
+                else:
+                    candidate_ch_count = ch_count
+                    stable_count       = 1
+                continue   # discard frames received before channel count is locked
+            elif ch_count != expected_ch_count:
+                ui.log(
+                    f'WARNING: channel count {ch_count} ≠ expected '
+                    f'{expected_ch_count} — frame skipped'
+                )
+                continue
+
+            # ── Joystick output ───────────────────────────────────────────
+            frames_decoded += 1
+            if frames_decoded == 1:
+                ui.log(f'PPM signal detected — {ch_count} channels')
+
+            if uinput_fd is not None:
+                btn_transitions = emit_channel_events(uinput_fd, output_state, completed_frame, profile)
+                for ch_num, btn_code, pressed in btn_transitions:
+                    # Show transmitter channel, HID key code, and joystick button number
+                    # (joydev assigns button N to BTN_JOYSTICK+N, i.e. 0x120+N)
+                    if 0x120 <= btn_code <= 0x12f:
+                        hid_label = f'EV_KEY 0x{btn_code:03x} (joystick btn {btn_code - 0x120})'
+                    else:
+                        hid_label = f'EV_KEY 0x{btn_code:03x}'
+                    state_str = 'PRESS  ▶' if pressed else 'release ◀'
+                    ui.log(f'ch{ch_num} → {hid_label}: {state_str}')
+
+            # ── Display update ────────────────────────────────────────────
+            if ui.active:
+                status: list[str] = []
+                if args.monitor:
+                    status.append(
+                        _build_monitor_line(completed_frame, output_state,
+                                            ppm_decoder.last_frame_hz, profile)
+                    )
+                if args.debug:
+                    status.extend(ppm_decoder.last_debug_lines)
+                if args.oscilloscope and osc_frame_samples:
+                    osc_width = min(72, shutil.get_terminal_size(fallback=(80, 24)).columns - 4)
+                    status.extend(_render_oscilloscope(
+                        osc_frame_samples, args.threshold, osc_width, OSCILLOSCOPE_HEIGHT
+                    ))
+                ui.update_status(status)
+            else:
+                if args.monitor:
+                    line = _build_monitor_line(completed_frame, output_state,
+                                               ppm_decoder.last_frame_hz, profile)
+                    sys.stdout.write(f'\r{line}\033[K')
+                    sys.stdout.flush()
+                if args.debug and ppm_decoder.last_debug_lines:
+                    ui.render_debug_stderr(ppm_decoder.last_debug_lines)
+
+        # ── Neutral reset on prolonged signal absence ─────────────────────
+        # Checked once per chunk so the reset fires even when the signal is
+        # completely absent and the inner per-frame loop never fires.
+        if (uinput_fd is not None and not real_time_file
+                and last_frame_time is not None and not in_signal_gap
+                and time.monotonic() - last_frame_time > SIGNAL_NEUTRAL_THRESHOLD_S):
+            in_signal_gap = True
+            ui.log('*** SIGNAL LOST — joystick reset to neutral ***')
+            reset_joystick_to_neutral(uinput_fd, output_state, profile)
+
+        # ── Real-time throttle (file mode only) ───────────────────────────
+        if real_time_file:
+            next_chunk_deadline += chunk_duration_s
+            sleep_s = next_chunk_deadline - time.monotonic()
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+
+
+def main() -> None:
+    args = _parse_args()
+
+    # Load transmitter profile
+    if args.config:
+        try:
+            profile = load_profile(args.config)
+        except (ValueError, KeyError) as exc:
+            sys.exit(f'error: invalid profile {args.config!r}: {exc}')
+        except OSError as exc:
+            sys.exit(f'error: cannot read profile {args.config!r}: {exc}')
+    else:
+        profile = Profile()
+
+    if not args.no_joystick and not os.path.exists('/dev/uinput'):
+        sys.exit('error: /dev/uinput not found – is the uinput kernel module loaded?\n'
+                 '       use --no-joystick to run without creating a virtual device')
+
+    # Probe or configure audio source
+    audio_channel, audio_invert, actual_rate, source_label, mixer_was_modified = \
+        _setup_audio_source(args)
+
+    # Create virtual joystick (or skip with --no-joystick)
     if profile.device_name:
         print(f'Profile: {profile.device_name}')
-
+    uinput_fd: int | None = None
     if args.no_joystick:
         print('Virtual joystick: disabled (--no-joystick)')
     else:
@@ -1381,7 +1590,7 @@ def main():
                      '       use --no-joystick to run without creating a virtual device')
         print('ok')
 
-    # Calculate how many rows the fixed status area needs
+    # Build terminal UI with the right number of fixed status rows
     fixed_rows = 0
     if args.monitor:
         fixed_rows += 1
@@ -1389,12 +1598,15 @@ def main():
         fixed_rows += PPM_DECODE_MAX_CHANNELS + 2
     if args.oscilloscope:
         fixed_rows += OSCILLOSCOPE_HEIGHT
-
     ui = TerminalUI()
     if fixed_rows:
         ui.start(fixed_rows)
 
-    def shutdown(signum=None, frame=None):
+    # Mutable handles accessed by the shutdown() closure
+    audio_capture_proc: subprocess.Popen[bytes] | None = None
+    audio_file: Any = None
+
+    def shutdown(signum: int | None = None, frame: Any = None) -> None:
         ui.stop()
         print('\nShutting down …')
         if audio_capture_proc:
@@ -1413,169 +1625,30 @@ def main():
 
     channel_name = 'left' if audio_channel == 0 else 'right'
     inv_note     = ', inverted' if audio_invert else ''
-    ui.log(f'{"File" if args.file else "Capturing from"}: {audio_source_label}  '
+    ui.log(f'{"File" if args.file else "Capturing from"}: {source_label}  '
            f'({actual_rate} Hz, {channel_name} channel{inv_note})')
 
+    # Open audio stream
     if args.file:
         audio_file, actual_rate = open_audio_file(args.file, actual_rate)
-        audio_source = audio_file
+        audio_source: IO[bytes] = audio_file
     else:
         audio_capture_proc = start_audio_capture(args.device, actual_rate)
-        audio_source       = audio_capture_proc.stdout
+        audio_source = audio_capture_proc.stdout  # type: ignore[assignment]
 
-    ppm_decoder  = PpmDecoder(max_channels=PPM_DECODE_MAX_CHANNELS, debug=args.debug,
-                             sample_rate=actual_rate, threshold=args.threshold,
-                             hysteresis=args.hysteresis,
-                             sync_min_us=profile.sync_min_us, sync_max_us=profile.sync_max_us,
-                             channel_min_us=profile.channel_min_us,
-                             channel_max_us=profile.channel_max_us,
-                             axis_min_us=profile.axis_min_us,
-                             axis_max_us=profile.axis_max_us)
+    ppm_decoder = PpmDecoder(
+        max_channels=PPM_DECODE_MAX_CHANNELS, debug=args.debug,
+        sample_rate=actual_rate, threshold=args.threshold,
+        hysteresis=args.hysteresis,
+        sync_min_us=profile.sync_min_us, sync_max_us=profile.sync_max_us,
+        channel_min_us=profile.channel_min_us, channel_max_us=profile.channel_max_us,
+        axis_min_us=profile.axis_min_us, axis_max_us=profile.axis_max_us,
+    )
     output_state = ChannelOutputState(profile.channel_map)
-    frames_decoded = 0
-    last_frame_time    = None
-    in_signal_gap      = False
-    # Channel count stability locking
-    expected_ch_count  = None
-    candidate_ch_count = None
-    stable_count       = 0
-    # Oscilloscope buffering (only when --oscilloscope is active)
-    osc_buffer       = []   # accumulates samples for the current frame
-    osc_frame_samples = []  # samples from the last completed frame
-
-    real_time_file = args.file and not args.no_realtime
-
-    ui.log('Waiting for PPM signal … (Ctrl-C to quit)')
-    if real_time_file:
-        ui.log('Real-time playback enabled (--no-realtime to disable)')
-
-    AUDIO_CHUNK_BYTES  = 1024 * 4   # 1024 stereo frames × 4 bytes/frame (2ch × 2 bytes/sample)
-    chunk_duration_s   = AUDIO_CHUNK_BYTES / 4 / actual_rate   # wall-clock time per chunk
-    next_chunk_deadline = time.monotonic()
 
     try:
-        while True:
-            raw_audio = audio_source.read(AUDIO_CHUNK_BYTES)
-            if not raw_audio:
-                if args.file:
-                    ui.log('End of recording.')
-                else:
-                    ui.log('Audio capture ended unexpectedly')
-                break
-
-            channel_byte_offset = audio_channel * 2
-            for byte_offset in range(0, len(raw_audio) - 3, 4):
-                sample = struct.unpack_from('<h', raw_audio, byte_offset + channel_byte_offset)[0]
-                if audio_invert:
-                    sample = -sample
-                completed_frame = ppm_decoder.feed(sample)
-
-                if args.oscilloscope:
-                    osc_buffer.append(sample)
-
-                if completed_frame is None:
-                    continue
-
-                if args.oscilloscope:
-                    osc_frame_samples = osc_buffer[:]
-                    osc_buffer.clear()
-
-                # ── Signal gap detection ──────────────────────────────────────
-                now   = time.monotonic()
-                gap_s = (now - last_frame_time) if last_frame_time is not None else 0.0
-                last_frame_time = now
-
-                if gap_s > SIGNAL_GAP_THRESHOLD_S and not real_time_file:
-                    ui.log(f'*** SIGNAL GAP {gap_s:.1f}s ***')
-                    in_signal_gap = True
-                elif in_signal_gap:
-                    ui.log('Signal restored')
-                    in_signal_gap = False
-
-                # ── Channel count stability locking ───────────────────────────
-                # The decoder may emit short frames at start-up or after signal gaps
-                # (sync seen but fewer channels received).  Require CHANNEL_LOCK_FRAMES
-                # consecutive frames with the same count before accepting that count;
-                # then skip any frame that deviates from it.
-                ch_count = len(completed_frame)
-
-                if expected_ch_count is None:
-                    if ch_count == candidate_ch_count:
-                        stable_count += 1
-                        if stable_count >= CHANNEL_LOCK_FRAMES:
-                            expected_ch_count = ch_count
-                            ui.log(f'Channel count locked: {ch_count}')
-                    else:
-                        candidate_ch_count = ch_count
-                        stable_count       = 1
-                    continue   # discard frames received before channel count is locked
-                elif ch_count != expected_ch_count:
-                    ui.log(
-                        f'WARNING: channel count {ch_count} ≠ expected '
-                        f'{expected_ch_count} — frame skipped'
-                    )
-                    continue
-
-                # ── Joystick output ───────────────────────────────────────────
-                frames_decoded += 1
-                if frames_decoded == 1:
-                    ui.log(f'PPM signal detected — {ch_count} channels')
-
-                if uinput_fd is not None:
-                    btn_transitions = emit_channel_events(uinput_fd, output_state, completed_frame, profile)
-                    if btn_transitions:
-                        for ch_num, btn_code, pressed in btn_transitions:
-                            # Show transmitter channel, HID key code, and joystick button number
-                            # (joydev assigns button N to BTN_JOYSTICK+N, i.e. 0x120+N)
-                            if 0x120 <= btn_code <= 0x12f:
-                                hid_label = f'EV_KEY 0x{btn_code:03x} (joystick btn {btn_code - 0x120})'
-                            else:
-                                hid_label = f'EV_KEY 0x{btn_code:03x}'
-                            state_str = 'PRESS  ▶' if pressed else 'release ◀'
-                            ui.log(f'ch{ch_num} → {hid_label}: {state_str}')
-
-                # ── Display update ────────────────────────────────────────────
-                if ui.active:
-                    status = []
-                    if args.monitor:
-                        status.append(
-                            _build_monitor_line(completed_frame, output_state,
-                                                ppm_decoder.last_frame_hz, profile)
-                        )
-                    if args.debug:
-                        status.extend(ppm_decoder.last_debug_lines)
-                    if args.oscilloscope and osc_frame_samples:
-                        osc_width = min(72, shutil.get_terminal_size(fallback=(80, 24)).columns - 4)
-                        status.extend(_render_oscilloscope(
-                            osc_frame_samples, args.threshold, osc_width, OSCILLOSCOPE_HEIGHT
-                        ))
-                    ui.update_status(status)
-                else:
-                    if args.monitor:
-                        line = _build_monitor_line(completed_frame, output_state,
-                                                   ppm_decoder.last_frame_hz, profile)
-                        sys.stdout.write(f'\r{line}\033[K')
-                        sys.stdout.flush()
-                    if args.debug and ppm_decoder.last_debug_lines:
-                        ui.render_debug_stderr(ppm_decoder.last_debug_lines)
-
-            # ── Neutral reset on prolonged signal absence ─────────────────────
-            # Checked once per chunk so the reset fires even when the signal is
-            # completely absent and the inner per-frame loop never fires.
-            if (uinput_fd is not None and not real_time_file
-                    and last_frame_time is not None and not in_signal_gap
-                    and time.monotonic() - last_frame_time > SIGNAL_NEUTRAL_THRESHOLD_S):
-                in_signal_gap = True
-                ui.log('*** SIGNAL LOST — joystick reset to neutral ***')
-                reset_joystick_to_neutral(uinput_fd, output_state, profile)
-
-            # ── Real-time throttle (file mode only) ───────────────────────────
-            if real_time_file:
-                next_chunk_deadline += chunk_duration_s
-                sleep_s = next_chunk_deadline - time.monotonic()
-                if sleep_s > 0:
-                    time.sleep(sleep_s)
-
+        _decode_loop(args, audio_source, audio_channel, audio_invert, actual_rate,
+                     ppm_decoder, output_state, uinput_fd, profile, ui)
     except KeyboardInterrupt:
         pass
 

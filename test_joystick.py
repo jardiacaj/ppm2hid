@@ -17,6 +17,8 @@ Coverage:
   - Integration: replay 192 kHz recording, assert ch3 and ch4 had press+release
 """
 
+from __future__ import annotations
+
 import os
 import struct
 import sys
@@ -49,14 +51,14 @@ EVENT_SIZE = struct.calcsize(INPUT_EVENT_STRUCT)   # 24 bytes
 class _WriteSink:
     """Replaces os.write; accumulates bytes written to fd=1 (sentinel)."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._buf = b''
 
-    def write(self, fd, data):
+    def write(self, fd: int, data: bytes) -> int:
         self._buf += data
         return len(data)
 
-    def events(self):
+    def events(self) -> list[tuple[int, int, int]]:
         """Parse captured bytes into (type, code, value) tuples."""
         out = []
         for i in range(0, len(self._buf) - EVENT_SIZE + 1, EVENT_SIZE):
@@ -65,17 +67,18 @@ class _WriteSink:
             out.append((etype, ecode, evalue))
         return out
 
-    def reset(self):
+    def reset(self) -> None:
         self._buf = b''
 
 
-def _emit(sink, state, ppm_frame):
+def _emit(sink: _WriteSink, state: ChannelOutputState,
+          ppm_frame: list[int]) -> list[tuple[int, int, bool]]:
     """Call emit_channel_events with fd=1 while os.write is patched."""
     with patch('ppm2hid.os.write', side_effect=sink.write):
         return emit_channel_events(1, state, ppm_frame)
 
 
-def _make_frame(*values):
+def _make_frame(*values: int) -> list[int]:
     """Build a PPM frame list; pads missing channels with their inactive default.
 
     ch7 (index 6) is the three-position slider: pad with 1100 µs (physical low
@@ -92,7 +95,7 @@ def _make_frame(*values):
 class TestEvSync(unittest.TestCase):
     """EV_SYN is sent after every call, even when nothing changed."""
 
-    def test_syn_sent_when_nothing_changed(self):
+    def test_syn_sent_when_nothing_changed(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         # First frame: axes at centre, buttons at released → deadband skips axes,
@@ -103,7 +106,7 @@ class TestEvSync(unittest.TestCase):
         self.assertTrue(syn_events, "Expected at least one EV_SYN")
         self.assertEqual(syn_events[-1], (EV_SYN, SYN_REPORT, 0))
 
-    def test_syn_sent_on_second_identical_frame(self):
+    def test_syn_sent_on_second_identical_frame(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         frame = _make_frame(_PROFILE.axis_max_us)
@@ -115,13 +118,13 @@ class TestEvSync(unittest.TestCase):
 
 class TestAxisPassthrough(unittest.TestCase):
 
-    def test_large_move_emits_abs_event(self):
+    def test_large_move_emits_abs_event(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         _emit(sink, state, _make_frame(_PROFILE.axis_max_us))   # ch1 = 1900
         self.assertIn((EV_ABS, ABS_X, _PROFILE.axis_max_us), sink.events())
 
-    def test_small_move_within_deadband_suppressed(self):
+    def test_small_move_within_deadband_suppressed(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         # First move establishes baseline at _PROFILE.axis_center_us (deadband applied to Δ)
@@ -133,7 +136,7 @@ class TestAxisPassthrough(unittest.TestCase):
         abs_events = [e for e in sink.events() if e[0] == EV_ABS and e[1] == ABS_X]
         self.assertEqual(abs_events, [], "Deadband should suppress tiny movement")
 
-    def test_move_exactly_at_deadband_emits(self):
+    def test_move_exactly_at_deadband_emits(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         _emit(sink, state, _make_frame(_PROFILE.axis_max_us))
@@ -147,24 +150,24 @@ class TestAxisPassthrough(unittest.TestCase):
 class TestAxisInversion(unittest.TestCase):
     """ch2 (ABS_Y) is inverted: value_us = AXIS_MIN + AXIS_MAX − raw_us."""
 
-    def _ch2_frame(self, raw_us):
+    def _ch2_frame(self, raw_us: int) -> list[int]:
         return _make_frame(_PROFILE.axis_center_us, raw_us)
 
-    def test_inversion_at_min(self):
+    def test_inversion_at_min(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         _emit(sink, state, self._ch2_frame(_PROFILE.axis_min_us))
         expected = _PROFILE.axis_min_us + _PROFILE.axis_max_us - _PROFILE.axis_min_us   # = _PROFILE.axis_max_us
         self.assertIn((EV_ABS, ABS_Y, expected), sink.events())
 
-    def test_inversion_at_max(self):
+    def test_inversion_at_max(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         _emit(sink, state, self._ch2_frame(_PROFILE.axis_max_us))
         expected = _PROFILE.axis_min_us + _PROFILE.axis_max_us - _PROFILE.axis_max_us   # = _PROFILE.axis_min_us
         self.assertIn((EV_ABS, ABS_Y, expected), sink.events())
 
-    def test_inversion_at_centre_emitted_on_first_move(self):
+    def test_inversion_at_centre_emitted_on_first_move(self) -> None:
         """Centre inverts to centre; first move from ChannelOutputState default triggers emit."""
         sink  = _WriteSink()
         state = ChannelOutputState()
@@ -191,17 +194,17 @@ class TestButtonHysteresis(unittest.TestCase):
     PRESS_THRESHOLD   = _PROFILE.button_threshold_us + _PROFILE.button_hysteresis_us   # 1521
     RELEASE_THRESHOLD = _PROFILE.button_threshold_us - _PROFILE.button_hysteresis_us   # 1479
 
-    def _ch3_frame(self, raw_us):
+    def _ch3_frame(self, raw_us: int) -> list[int]:
         return _make_frame(_PROFILE.axis_center_us, _PROFILE.axis_center_us, raw_us)
 
-    def test_press_above_threshold(self):
+    def test_press_above_threshold(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         transitions = _emit(sink, state, self._ch3_frame(self.PRESS_THRESHOLD + 1))
         self.assertIn((EV_KEY, BTN_SW_CH3, 1), sink.events())
         self.assertIn((3, BTN_SW_CH3, True), transitions)
 
-    def test_value_at_press_threshold_does_not_press(self):
+    def test_value_at_press_threshold_does_not_press(self) -> None:
         """raw_us = 1521 — with hys=-21 (released state): threshold = 1521, need > 1521."""
         sink  = _WriteSink()
         state = ChannelOutputState()
@@ -209,13 +212,13 @@ class TestButtonHysteresis(unittest.TestCase):
         key_events = [e for e in sink.events() if e[0] == EV_KEY]
         self.assertEqual(key_events, [], f"value={self.PRESS_THRESHOLD} should NOT press")
 
-    def test_value_well_above_center_presses(self):
+    def test_value_well_above_center_presses(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         _emit(sink, state, self._ch3_frame(1900))   # fully pressed
         self.assertIn((EV_KEY, BTN_SW_CH3, 1), sink.events())
 
-    def test_release_below_threshold(self):
+    def test_release_below_threshold(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         # Press first
@@ -226,7 +229,7 @@ class TestButtonHysteresis(unittest.TestCase):
         self.assertIn((EV_KEY, BTN_SW_CH3, 0), sink.events())
         self.assertIn((3, BTN_SW_CH3, False), transitions)
 
-    def test_value_just_above_release_threshold_stays_pressed(self):
+    def test_value_just_above_release_threshold_stays_pressed(self) -> None:
         """raw_us = 1480: with hys=+21 (pressed state): threshold = 1479, need <= 1479."""
         sink  = _WriteSink()
         state = ChannelOutputState()
@@ -236,7 +239,7 @@ class TestButtonHysteresis(unittest.TestCase):
         key_events = [e for e in sink.events() if e[0] == EV_KEY]
         self.assertEqual(key_events, [], "1480 should stay pressed — inside hysteresis band")
 
-    def test_no_event_when_button_stays_released(self):
+    def test_no_event_when_button_stays_released(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         for _ in range(3):
@@ -244,7 +247,7 @@ class TestButtonHysteresis(unittest.TestCase):
         key_events = [e for e in sink.events() if e[0] == EV_KEY]
         self.assertEqual(key_events, [], "Stable released button must not emit events")
 
-    def test_no_event_when_button_stays_pressed(self):
+    def test_no_event_when_button_stays_pressed(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         _emit(sink, state, self._ch3_frame(1900))
@@ -254,7 +257,7 @@ class TestButtonHysteresis(unittest.TestCase):
         key_events = [e for e in sink.events() if e[0] == EV_KEY]
         self.assertEqual(key_events, [], "Stable pressed button must not emit repeat events")
 
-    def test_ch4_independent_of_ch3(self):
+    def test_ch4_independent_of_ch3(self) -> None:
         """ch3 and ch4 use independent state; pressing one does not affect the other."""
         sink  = _WriteSink()
         state = ChannelOutputState()
@@ -287,12 +290,12 @@ class TestSliderThreePos(unittest.TestCase):
     SL_HI_PRESS_US   = _PROFILE.slider_high_threshold_us + _PROFILE.button_hysteresis_us   # 1721
     SL_HI_RELEASE_US = _PROFILE.slider_high_threshold_us - _PROFILE.button_hysteresis_us   # 1679
 
-    def _ch7_frame(self, raw_us):
+    def _ch7_frame(self, raw_us: int) -> list[int]:
         frame = [_PROFILE.axis_center_us] * len(_PROFILE.channel_map)
         frame[6] = raw_us
         return frame
 
-    def test_low_position_presses_neither(self):
+    def test_low_position_presses_neither(self) -> None:
         """PPM ~1100 µs → no buttons pressed."""
         sink  = _WriteSink()
         state = ChannelOutputState()
@@ -300,7 +303,7 @@ class TestSliderThreePos(unittest.TestCase):
         key_events = [e for e in sink.events() if e[0] == EV_KEY]
         self.assertEqual(key_events, [])
 
-    def test_low_threshold_not_crossed(self):
+    def test_low_threshold_not_crossed(self) -> None:
         """raw_us = 1321 exactly: need > 1321 to press BTN_SL_LO."""
         sink  = _WriteSink()
         state = ChannelOutputState()
@@ -308,7 +311,7 @@ class TestSliderThreePos(unittest.TestCase):
         key_events = [e for e in sink.events() if e[0] == EV_KEY]
         self.assertEqual(key_events, [])
 
-    def test_mid_position_presses_btnsllo_only(self):
+    def test_mid_position_presses_btnsllo_only(self) -> None:
         """PPM ~1500 µs → BTN_SL_LO pressed, BTN_SL_HI not."""
         sink  = _WriteSink()
         state = ChannelOutputState()
@@ -317,7 +320,7 @@ class TestSliderThreePos(unittest.TestCase):
         self.assertNotIn((EV_KEY, BTN_SL_HI, 1), sink.events())
         self.assertIn((7, BTN_SL_LO, True), transitions)
 
-    def test_mid_to_low_releases_btnsllo(self):
+    def test_mid_to_low_releases_btnsllo(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         _emit(sink, state, self._ch7_frame(_PROFILE.axis_center_us))            # enter mid
@@ -325,7 +328,7 @@ class TestSliderThreePos(unittest.TestCase):
         _emit(sink, state, self._ch7_frame(self.SL_LO_RELEASE_US))     # return to low
         self.assertIn((EV_KEY, BTN_SL_LO, 0), sink.events())
 
-    def test_high_position_presses_both(self):
+    def test_high_position_presses_both(self) -> None:
         """PPM ~1900 µs → BTN_SL_LO + BTN_SL_HI pressed."""
         sink  = _WriteSink()
         state = ChannelOutputState()
@@ -333,7 +336,7 @@ class TestSliderThreePos(unittest.TestCase):
         self.assertIn((EV_KEY, BTN_SL_LO, 1), sink.events())
         self.assertIn((EV_KEY, BTN_SL_HI, 1), sink.events())
 
-    def test_high_to_mid_releases_btnsllhi_only(self):
+    def test_high_to_mid_releases_btnsllhi_only(self) -> None:
         """Dropping from high to mid releases BTN_SL_HI, BTN_SL_LO stays pressed."""
         sink  = _WriteSink()
         state = ChannelOutputState()
@@ -344,7 +347,7 @@ class TestSliderThreePos(unittest.TestCase):
         self.assertNotIn((EV_KEY, BTN_SL_LO, 0), sink.events())
         self.assertTrue(state.button_states[BTN_SL_LO])
 
-    def test_high_to_low_releases_both(self):
+    def test_high_to_low_releases_both(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         _emit(sink, state, self._ch7_frame(1900))                      # enter high
@@ -353,7 +356,7 @@ class TestSliderThreePos(unittest.TestCase):
         self.assertIn((EV_KEY, BTN_SL_HI, 0), sink.events())
         self.assertIn((EV_KEY, BTN_SL_LO, 0), sink.events())
 
-    def test_btnsllhi_never_pressed_without_btnsllo(self):
+    def test_btnsllhi_never_pressed_without_btnsllo(self) -> None:
         """BTN_SL_HI pressed implies BTN_SL_LO pressed — invariant across full sweep."""
         sink  = _WriteSink()
         state = ChannelOutputState()
@@ -368,20 +371,20 @@ class TestSliderThreePos(unittest.TestCase):
 class TestTransitions(unittest.TestCase):
     """emit_channel_events returns only the transitions that occurred."""
 
-    def test_no_transitions_when_nothing_changes(self):
+    def test_no_transitions_when_nothing_changes(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         t = _emit(sink, state, _make_frame(_PROFILE.axis_center_us))
         self.assertEqual(t, [])
 
-    def test_single_button_press_returns_one_transition(self):
+    def test_single_button_press_returns_one_transition(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         t = _emit(sink, state, _make_frame(_PROFILE.axis_center_us, _PROFILE.axis_center_us, 1900))
         self.assertEqual(len(t), 1)
         self.assertEqual(t[0], (3, BTN_SW_CH3, True))
 
-    def test_press_then_release_returns_separate_transitions(self):
+    def test_press_then_release_returns_separate_transitions(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
         t_press   = _emit(sink, state, _make_frame(_PROFILE.axis_center_us, _PROFILE.axis_center_us, 1900))
@@ -399,7 +402,7 @@ class TestIntegrationRecording(unittest.TestCase):
     """
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         if not os.path.exists(RECORDING_PATH):
             raise FileNotFoundError(
                 f"Recording not found: {RECORDING_PATH}  "
@@ -412,7 +415,7 @@ class TestIntegrationRecording(unittest.TestCase):
             for offset in range(0, len(raw) - 3, 4)
         ]
 
-    def test_ch3_and_ch4_press_and_release(self):
+    def test_ch3_and_ch4_press_and_release(self) -> None:
         decoder = PpmDecoder(max_channels=len(_PROFILE.channel_map),
                              sample_rate=RECORDING_SAMPLE_RATE)
         state = ChannelOutputState()

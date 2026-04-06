@@ -23,6 +23,8 @@ Expected outcomes:
   - All decoded values stay within [_PROFILE.axis_min_us, _PROFILE.axis_max_us].
 """
 
+from __future__ import annotations
+
 import os
 import struct
 import sys
@@ -45,14 +47,15 @@ MIN_FRAMES_PER_WINDOW = 60
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _load_samples(path):
+def _load_samples(path: str) -> tuple[list[int], int]:
     with wave.open(path, 'rb') as wf:
         raw  = wf.readframes(wf.getnframes())
         rate = wf.getframerate()
     return [struct.unpack_from('<h', raw, o)[0] for o in range(0, len(raw) - 3, 4)], rate
 
 
-def _decode_with_indices(samples, sample_rate):
+def _decode_with_indices(samples: list[int],
+                          sample_rate: int) -> list[tuple[int, list[int]]]:
     """Return list of (sample_index, frame) for every complete frame."""
     decoder = PpmDecoder(max_channels=len(_PROFILE.channel_map), sample_rate=sample_rate)
     results = []
@@ -84,7 +87,7 @@ def _find_gaps(indexed_frames, sample_rate, threshold_periods):
 class TestCableReconnect(unittest.TestCase):
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         if not os.path.exists(RECORDING_PATH):
             raise FileNotFoundError(
                 f'Recording not found: {RECORDING_PATH}\n'
@@ -102,7 +105,7 @@ class TestCableReconnect(unittest.TestCase):
                 'the left channel'
             )
 
-    def test_gap_detected(self):
+    def test_gap_detected(self) -> None:
         """At least one cable-out gap must be present in the recording."""
         self.assertGreaterEqual(
             len(self.gaps), 1,
@@ -110,7 +113,7 @@ class TestCableReconnect(unittest.TestCase):
             f'(threshold: {GAP_THRESHOLD_PERIODS}× nominal frame period)'
         )
 
-    def test_frames_before_gap(self):
+    def test_frames_before_gap(self) -> None:
         """Enough clean frames must exist before the first disconnect."""
         if not self.gaps:
             self.skipTest('no gap detected')
@@ -122,7 +125,7 @@ class TestCableReconnect(unittest.TestCase):
             'start recording with the cable plugged in and transmitter on'
         )
 
-    def test_frames_after_gap(self):
+    def test_frames_after_gap(self) -> None:
         """Enough clean frames must exist after the final reconnect."""
         if not self.gaps:
             self.skipTest('no gap detected')
@@ -134,7 +137,7 @@ class TestCableReconnect(unittest.TestCase):
             'keep recording for 2–3 s after reconnecting'
         )
 
-    def test_no_phantom_frames_during_gap(self):
+    def test_no_phantom_frames_during_gap(self) -> None:
         """No frames should be decoded while the cable is disconnected."""
         for gap_start, gap_end in self.gaps:
             during = [f for idx, f in self.indexed_frames
@@ -146,7 +149,7 @@ class TestCableReconnect(unittest.TestCase):
                 f'DEFAULT_AUDIO_HYSTERESIS may need to be raised'
             )
 
-    def test_channel_count_consistent(self):
+    def test_channel_count_consistent(self) -> None:
         """Frames outside gap boundaries must have the expected channel count.
 
         A single partial frame at a reconnect boundary is tolerated — the
@@ -176,7 +179,7 @@ class TestCableReconnect(unittest.TestCase):
             if bad else ''
         )
 
-    def test_values_in_range(self):
+    def test_values_in_range(self) -> None:
         """All decoded channel values must lie within [_PROFILE.axis_min_us, _PROFILE.axis_max_us]."""
         violations = [
             (idx, ch, v)
