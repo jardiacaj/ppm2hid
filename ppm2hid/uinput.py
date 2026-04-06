@@ -66,7 +66,8 @@ def open_uinput_joystick(profile: Profile | None = None) -> int:
         absfuzz[abs_code] = 0              # kernel fuzz disabled; software deadband handles filtering
         absflat[abs_code] = 50             # ~±50 µs flat zone snaps stick-at-rest to zero
 
-    device_name     = b'ppm2joy\x00'.ljust(UINPUT_MAX_NAME_SIZE, b'\x00')
+    raw_name    = (profile.device_name or 'ppm2joy').encode()[:UINPUT_MAX_NAME_SIZE - 1]
+    device_name = (raw_name + b'\x00').ljust(UINPUT_MAX_NAME_SIZE, b'\x00')
     # Pack the kernel uinput_user_dev structure (linux/uinput.h):
     #   char  name[UINPUT_MAX_NAME_SIZE]   — device display name
     #   __u16 id.bustype, id.vendor, id.product, id.version
