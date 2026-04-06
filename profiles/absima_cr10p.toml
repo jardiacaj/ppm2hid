@@ -30,7 +30,7 @@ label = "STR"
 index  = 2
 type   = "axis"
 code   = "ABS_Y"
-invert = false
+invert = true
 label  = "THR"
 
 [[channel]]
