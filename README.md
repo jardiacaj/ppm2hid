@@ -55,7 +55,7 @@ Tested hardware: **Absima CR10P / Dumbo RC DDF-350** transmitter.
 ```bash
 git clone https://github.com/jardiacaj/ppm2hid.git
 cd ppm2hid
-python3 ppm2hid.py
+python3 -m ppm2hid
 ```
 
 The tool auto-detects the audio source carrying the PPM signal, creates a
@@ -90,10 +90,10 @@ precision at the cost of higher CPU usage.
 
 **`record_ppm.py`** — auto-detects the PPM audio source and writes a WAV
 recording. After recording it prints the exact command to replay the file
-through `ppm2hid.py`:
+through `ppm2hid`:
 
 ```bash
-python3 record_ppm.py                        # records until Ctrl-C
+python3 record_ppm.py                             # records until Ctrl-C
 python3 record_ppm.py --name sweep --duration 3   # 3 s → testdata/sweep.wav
 ```
 
@@ -102,7 +102,7 @@ python3 record_ppm.py --name sweep --duration 3   # 3 s → testdata/sweep.wav
 A profile configures the channel mapping and signal timing for your transmitter.
 
 ```bash
-python3 ppm2hid.py --config profiles/absima_cr10p.toml
+python3 -m ppm2hid --config profiles/absima_cr10p.toml
 ```
 
 See `profiles/absima_cr10p.toml` for a working example with all sections and fields.

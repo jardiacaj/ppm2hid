@@ -15,7 +15,7 @@ standard library only.
 ```bash
 git clone https://github.com/jardiacaj/ppm2hid.git
 cd ppm2hid
-python3 ppm2hid.py --no-joystick --monitor   # decode without /dev/uinput
+python3 -m ppm2hid --no-joystick --monitor   # decode without /dev/uinput
 ```
 
 ## Running tests
