@@ -55,7 +55,7 @@ Tested hardware: **Absima CR10P / Dumbo RC DDF-350** transmitter.
 ```bash
 git clone https://github.com/jardiacaj/ppm2hid.git
 cd ppm2hid
-python3 -m ppm2hid
+python3 -m ppm2hid --profile profiles/absima_cr10p.toml
 ```
 
 The tool auto-detects the audio source carrying the PPM signal, creates a
@@ -64,6 +64,9 @@ virtual joystick, and runs until interrupted with Ctrl-C.
 ## CLI reference
 
 ```
+Required:
+  --profile PATH       TOML transmitter profile
+
 Source (mutually exclusive):
   -s, --audio-source NAME       PipeWire/PulseAudio source name (default: auto-detect)
   -r, --audio-recording PATH   Replay a .wav or raw s16le stereo recording
@@ -76,7 +79,6 @@ Display:
 
 Behaviour:
   --no-joystick        Decode without opening /dev/uinput
-  --no-mixer           Skip ALSA Input Source switching
   --no-realtime        With --audio-recording: consume as fast as possible
   --threshold N        int16 midpoint for HIGH/LOW detection (default: 0)
   --hysteresis N       int16 dead zone around --threshold (default: 4000)
@@ -85,6 +87,117 @@ Behaviour:
 
 Higher sample rates (`--rate 96000` or `--rate 192000`) improve pulse timing
 precision at the cost of higher CPU usage.
+
+## High sample rate capture (96 kHz / 192 kHz)
+
+Higher sample rates improve PPM pulse timing precision:
+
+| Sample rate | Time per sample | Pulse timing error |
+|-------------|-----------------|-------------------|
+| 48 000 Hz   | ~20.8 µs        | ±10 µs            |
+| 96 000 Hz   | ~10.4 µs        | ±5 µs             |
+| 192 000 Hz  | ~5.2 µs         | ±2.5 µs           |
+
+### Why `--rate` alone is not enough
+
+When you pass `--rate 192000`, `parecord` *requests* 192 000 samples/s from
+PipeWire.  If PipeWire's internal clock is running at 48 000 Hz (its default),
+PipeWire captures from ALSA at 48 kHz and upsamples the data before handing it
+to `parecord`.  The 192 000 samples you receive are interpolated — the
+underlying timing resolution is still ~20 µs, not the expected ~5 µs.
+
+To get genuine high-rate capture three things must align:
+
+1. **The sound card** must support the target rate (many built-in codecs and
+   USB docks top out at 48 kHz; dedicated USB audio interfaces usually reach
+   96–192 kHz).
+2. **WirePlumber** (PipeWire's session manager) must open the ALSA device at
+   the target rate.
+3. **PipeWire's graph clock** should run at the same rate so no resampling
+   occurs inside the graph.
+
+### Step 1 — Check sound card support
+
+```bash
+# List all capture devices and their supported rates (run while idle):
+cat /proc/asound/card*/stream*
+```
+
+Look for a `Capture:` section with your target rate in `Rates:`.  If 192 kHz
+is absent, that hardware cannot do it — use a different interface.
+
+To identify which card is your Line In source:
+
+```bash
+pactl list sources short
+```
+
+### Step 2 — Configure WirePlumber
+
+WirePlumber controls how PipeWire opens ALSA devices.  Create a user-level
+drop-in (no root required):
+
+```bash
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d/
+```
+
+```
+# ~/.config/wireplumber/wireplumber.conf.d/50-alsa-192k.conf
+monitor.alsa.rules = [
+  {
+    matches = [{ node.name = "~alsa_input.*" }]
+    actions = {
+      update-props = {
+        audio.rate          = 192000
+        audio.allowed-rates = [ 48000 96000 192000 ]
+      }
+    }
+  }
+]
+```
+
+`audio.allowed-rates` lets PipeWire fall back when other applications need a
+different rate — the capture device stays at 192 kHz while PipeWire resamples
+for other consumers.
+
+To restrict the rule to a specific card, match on `node.name` or
+`alsa.card_name` (visible in `pactl list sources`).
+
+### Step 3 — Configure PipeWire's graph clock
+
+```bash
+mkdir -p ~/.config/pipewire/pipewire.conf.d/
+```
+
+```
+# ~/.config/pipewire/pipewire.conf.d/92-high-rate.conf
+context.properties = {
+  default.clock.rate          = 192000
+  default.clock.allowed-rates = [ 48000 96000 192000 ]
+}
+```
+
+### Step 4 — Restart PipeWire
+
+```bash
+systemctl --user restart pipewire pipewire-pulse wireplumber
+```
+
+### Step 5 — Verify
+
+Start `ppm2hid` with `--rate 192000`, then in another terminal:
+
+```bash
+# Should show "rate: 192000" while ppm2hid is running:
+cat /proc/asound/card*/pcm*c/sub*/hw_params
+
+# Check the active PipeWire graph rate:
+pw-top
+```
+
+If `hw_params` still shows `rate: 48000`, either the card does not support
+192 kHz or the WirePlumber rule did not match — verify the node name with
+`pactl list sources short` and adjust the `matches` filter accordingly.
 
 ## Utilities
 
@@ -127,8 +240,8 @@ axis_center_us           = 1500   # neutral / centre value for axes
 axis_deadband_us         = 42     # axis events suppressed within ±deadband of last sent value
 button_threshold_us      = 1500   # raw PPM value above which a button is "pressed"
 button_hysteresis_us     = 21     # hysteresis around button_threshold to prevent jitter
-slider_low_threshold_us  = 1300   # three_pos: LOW→MID boundary
-slider_high_threshold_us = 1700   # three_pos: MID→HI boundary
+slider_low_threshold_us  = 1300   # three_pos alias default: LOW→MID boundary
+slider_high_threshold_us = 1700   # three_pos alias default: MID→HI boundary
 sync_min_us              = 3000   # shortest pulse treated as a frame sync
 sync_max_us              = 50000  # longest pulse treated as a frame sync
 channel_min_us           = 500    # shortest pulse treated as a valid channel value
@@ -176,22 +289,35 @@ device to appear; gamepad-only profiles produce an evdev-only device.
 
 Raw integer codes are accepted for any field that takes a code name.
 
-#### Three-position slider
+#### N-position slider
+
+Maps a multi-position physical slider to n−1 buttons using a cumulative
+encoding: button[k] is pressed in positions k+1 through n−1.  Up to 6
+positions (5 buttons) are supported.
 
 ```toml
 [[channel]]
-index     = 7
-type      = "three_pos"
-low_code  = "BTN_TL"    # button sent when slider moves from LOW to MID
-high_code = "BTN_TR"    # button sent when slider moves from MID to HI
-label     = " c7"
-# Per-channel threshold overrides (optional — defaults to [signal] values):
-low_threshold_us  = 1300
-high_threshold_us = 1700
+index         = 7
+type          = "n_pos"
+codes         = ["BTN_TL", "BTN_TR"]   # n−1 button codes for n positions
+thresholds_us = [1300, 1700]           # n−1 thresholds (optional; auto-computed if omitted)
+label         = " c7"
 ```
 
-The slider maps to two buttons: `low_code` is pressed in MID and HI positions;
-`high_code` is additionally pressed in the HI position.
+With the example above (3 positions):
+
+| Slider position | BTN_TL | BTN_TR |
+|-----------------|--------|--------|
+| Low  (~1100 µs) | off    | off    |
+| Mid  (~1500 µs) | **on** | off    |
+| High (~1900 µs) | **on** | **on** |
+
+When `thresholds_us` is omitted, the thresholds are distributed evenly across
+`[axis_min_us, axis_max_us]`.
+
+> **Legacy alias:** `type = "three_pos"` with `low_code` / `high_code` / optional
+> `low_threshold_us` / `high_threshold_us` is still accepted and internally
+> converted to `n_pos`.
 
 ## Testing
 
