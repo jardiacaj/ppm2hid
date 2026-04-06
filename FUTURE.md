@@ -1,9 +1,9 @@
 # Tasks
 
 * No magic numbers
-* Split main file into modules
-* Line 5: mentions specific audio source
-* Line 9 and following: mentions specifics of this transmitter
+* Put tests in dedicated folder (if that's good practice)
+* Don't touch alsa settings in @alsa.py
+
 
 # Future ideas
 
