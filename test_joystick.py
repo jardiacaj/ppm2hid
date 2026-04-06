@@ -74,7 +74,7 @@ class _WriteSink:
 def _emit(sink: _WriteSink, state: ChannelOutputState,
           ppm_frame: list[int]) -> list[tuple[int, int, bool]]:
     """Call emit_channel_events with fd=1 while os.write is patched."""
-    with patch('ppm2hid.os.write', side_effect=sink.write):
+    with patch('ppm2hid.uinput.os.write', side_effect=sink.write):
         return emit_channel_events(1, state, ppm_frame)
 
 
@@ -427,7 +427,7 @@ class TestIntegrationRecording(unittest.TestCase):
             frame = decoder.feed(sample)
             if frame is None:
                 continue
-            with patch('ppm2hid.os.write', side_effect=sink.write):
+            with patch('ppm2hid.uinput.os.write', side_effect=sink.write):
                 emit_channel_events(1, state, frame)
             for e in sink.events():
                 etype, ecode, evalue = e
