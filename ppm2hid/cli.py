@@ -27,7 +27,6 @@ import time
 from typing import IO, Any
 
 from . import __version__
-from .alsa import switch_alsa_input_to_line_in, restore_alsa_input_sources
 from .audio import (
     open_audio_file, _get_file_sample_rate,
     start_audio_capture, discover_ppm_source,
@@ -83,10 +82,6 @@ def _parse_args() -> argparse.Namespace:
         help='Show live channel values in a fixed status line',
     )
     ap.add_argument(
-        '--no-mixer', action='store_true',
-        help="Don't modify the ALSA Input Source mixer control",
-    )
-    ap.add_argument(
         '--no-joystick', action='store_true',
         help='Decode and display PPM frames without creating a virtual joystick '
              '(useful for testing without /dev/uinput access)',
@@ -133,14 +128,14 @@ def _parse_args() -> argparse.Namespace:
 
 def _setup_audio_source(
     args: argparse.Namespace,
-) -> tuple[int, bool, int, str, bool]:
+) -> tuple[int, bool, int, str]:
     """
     Probe or configure the audio source.
 
     For --file mode: probes the recording for a PPM signal and detects channel/invert.
-    For live mode: optionally switches the ALSA mixer, then auto-detects or uses --device.
+    For live mode: auto-detects or uses --device.
 
-    Returns (audio_channel, audio_invert, actual_rate, source_label, mixer_was_modified).
+    Returns (audio_channel, audio_invert, actual_rate, source_label).
     Calls sys.exit() if the source cannot be determined.
     """
     if args.file:
@@ -158,15 +153,9 @@ def _setup_audio_source(
         ch_name  = 'left' if audio_channel == 0 else 'right'
         inv_note = ', inverted' if audio_invert else ''
         print(f'found ({ch_name} channel{inv_note})')
-        return audio_channel, audio_invert, actual_rate, args.file, False
+        return audio_channel, audio_invert, actual_rate, args.file
 
     # Live capture
-    mixer_was_modified = False
-    if not args.no_mixer:
-        print('Switching ALSA Input Source → Line In …')
-        switch_alsa_input_to_line_in()
-        mixer_was_modified = True
-
     audio_channel = 0
     audio_invert  = False
     if args.device is None:
@@ -177,7 +166,7 @@ def _setup_audio_source(
                 'error: no PPM source detected automatically\n'
                 '       specify one with --device (see: pactl list sources short)'
             )
-    return audio_channel, audio_invert, args.rate, args.device, mixer_was_modified
+    return audio_channel, audio_invert, args.rate, args.device
 
 
 def _decode_loop(
@@ -358,8 +347,7 @@ def main() -> None:
                  '       use --no-joystick to run without creating a virtual device')
 
     # Probe or configure audio source
-    audio_channel, audio_invert, actual_rate, source_label, mixer_was_modified = \
-        _setup_audio_source(args)
+    audio_channel, audio_invert, actual_rate, source_label = _setup_audio_source(args)
 
     # Create virtual joystick (or skip with --no-joystick)
     if profile.device_name:
@@ -401,9 +389,6 @@ def main() -> None:
             audio_file.close()
         if uinput_fd is not None:
             destroy_uinput_joystick(uinput_fd)
-        if mixer_was_modified:
-            print('Restoring ALSA Input Source …')
-            restore_alsa_input_sources()
         sys.exit(0)
 
     signal.signal(signal.SIGINT,  shutdown)

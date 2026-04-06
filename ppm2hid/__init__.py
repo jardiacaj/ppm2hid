@@ -24,7 +24,6 @@ from .uinput import (
     open_uinput_joystick, destroy_uinput_joystick,
     ChannelOutputState, reset_joystick_to_neutral, emit_channel_events,
 )
-from .alsa import switch_alsa_input_to_line_in, restore_alsa_input_sources
 from .audio import (
     open_audio_file, start_audio_capture,
     probe_source_for_ppm, probe_file_for_ppm, discover_ppm_source,
@@ -48,8 +47,6 @@ __all__ = [
     # uinput
     'open_uinput_joystick', 'destroy_uinput_joystick',
     'ChannelOutputState', 'reset_joystick_to_neutral', 'emit_channel_events',
-    # alsa
-    'switch_alsa_input_to_line_in', 'restore_alsa_input_sources',
     # audio
     'open_audio_file', 'start_audio_capture',
     'probe_source_for_ppm', 'probe_file_for_ppm', 'discover_ppm_source',
