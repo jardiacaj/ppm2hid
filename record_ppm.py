@@ -6,7 +6,7 @@ Captures stereo s16le audio from the PPM source and writes a WAV file.
 The sample rate is stored in the file header, so replay does not require
 --rate:
 
-    python3 -m ppm2hid --file testdata/ppm_<timestamp>_192k.wav
+    python3 -m ppm2hid --audio-recording testdata/ppm_<timestamp>_192k.wav
 
 Use --name to write directly to a well-known test-data path:
 
@@ -46,7 +46,7 @@ def main() -> None:
         description='Record PPM audio to a WAV file for use as test data',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='The output file can be replayed with:\n'
-               '  python3 -m ppm2hid --file <path>',
+               '  python3 -m ppm2hid --audio-recording <path>',
     )
     ap.add_argument(
         '-d', '--device', default=None,
@@ -124,7 +124,7 @@ def main() -> None:
         mb       = bytes_written / 1_048_576
         print(f'\n\nSaved {elapsed:.1f} s  ({mb:.1f} MB)  →  {output_path}')
         print('\nReplay with:')
-        print(f'  python3 -m ppm2hid --file {output_path}')
+        print(f'  python3 -m ppm2hid --audio-recording {output_path}')
         sys.exit(0)
 
     signal.signal(signal.SIGINT,  finish)

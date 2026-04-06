@@ -10,7 +10,7 @@ PPM signal format (positive/high-active — the most common convention):
   SYNC pulse  = long HIGH (>3 ms), marks the end/start of each frame
 
 Both positive and inverted (LOW-active) signals are detected automatically.
-Channel mapping and signal timing are configured via a TOML profile (--config);
+Channel mapping and signal timing are configured via a TOML profile (--profile);
 the built-in defaults match a typical 8-channel RC transmitter.
 """
 
@@ -70,12 +70,12 @@ def _parse_args() -> argparse.Namespace:
     )
     source_group = ap.add_mutually_exclusive_group()
     source_group.add_argument(
-        '-d', '--device', default=None,
+        '-s', '--audio-source', default=None,
         help='PipeWire/PulseAudio source device name (default: auto-detect)',
     )
     source_group.add_argument(
-        '-f', '--file', default=None, metavar='PATH',
-        help='Read from a raw s16le stereo recording instead of a live audio source',
+        '-r', '--audio-recording', default=None, metavar='PATH',
+        help='Read from a .wav or raw s16le stereo recording instead of a live audio source',
     )
     ap.add_argument(
         '-m', '--monitor', action='store_true',
@@ -92,7 +92,7 @@ def _parse_args() -> argparse.Namespace:
     )
     ap.add_argument(
         '--no-realtime', action='store_true',
-        help='With --file: consume the recording as fast as possible instead of '
+        help='With --audio-recording: consume the recording as fast as possible instead of '
              'at the original sample rate (default: real-time playback)',
     )
     ap.add_argument(
@@ -119,8 +119,8 @@ def _parse_args() -> argparse.Namespace:
              f'higher rates (96000, 192000) improve timing precision',
     )
     ap.add_argument(
-        '--config', default=None, metavar='PATH',
-        help='TOML transmitter profile (default: built-in Absima CR10P mapping)',
+        '--profile', default=None, metavar='PATH',
+        help='TOML transmitter profile (default: built-in mapping)',
     )
     ap.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
     return ap.parse_args()
@@ -132,18 +132,18 @@ def _setup_audio_source(
     """
     Probe or configure the audio source.
 
-    For --file mode: probes the recording for a PPM signal and detects channel/invert.
-    For live mode: auto-detects or uses --device.
+    For --audio-recording mode: probes the recording for a PPM signal and detects channel/invert.
+    For live mode: auto-detects or uses --audio-source.
 
     Returns (audio_channel, audio_invert, actual_rate, source_label).
     Calls sys.exit() if the source cannot be determined.
     """
-    if args.file:
-        if not os.path.exists(args.file):
-            sys.exit(f'error: file not found: {args.file}')
-        actual_rate = _get_file_sample_rate(args.file, args.rate)
-        print(f'Probing {args.file} for PPM signal … ', end='', flush=True)
-        result = probe_file_for_ppm(args.file, actual_rate, args.threshold, args.hysteresis)
+    if args.audio_recording:
+        if not os.path.exists(args.audio_recording):
+            sys.exit(f'error: file not found: {args.audio_recording}')
+        actual_rate = _get_file_sample_rate(args.audio_recording, args.rate)
+        print(f'Probing {args.audio_recording} for PPM signal … ', end='', flush=True)
+        result = probe_file_for_ppm(args.audio_recording, actual_rate, args.threshold, args.hysteresis)
         if result is None:
             sys.exit(
                 'no PPM signal found\n'
@@ -153,20 +153,20 @@ def _setup_audio_source(
         ch_name  = 'left' if audio_channel == 0 else 'right'
         inv_note = ', inverted' if audio_invert else ''
         print(f'found ({ch_name} channel{inv_note})')
-        return audio_channel, audio_invert, actual_rate, args.file
+        return audio_channel, audio_invert, actual_rate, args.audio_recording
 
     # Live capture
     audio_channel = 0
     audio_invert  = False
-    if args.device is None:
-        args.device, audio_channel, audio_invert = discover_ppm_source(
+    if args.audio_source is None:
+        args.audio_source, audio_channel, audio_invert = discover_ppm_source(
             args.rate, args.threshold, args.hysteresis)
-        if args.device is None:
+        if args.audio_source is None:
             sys.exit(
                 'error: no PPM source detected automatically\n'
-                '       specify one with --device (see: pactl list sources short)'
+                '       specify one with --audio-source (see: pactl list sources short)'
             )
-    return audio_channel, audio_invert, args.rate, args.device
+    return audio_channel, audio_invert, args.rate, args.audio_source
 
 
 def _decode_loop(
@@ -199,7 +199,7 @@ def _decode_loop(
     osc_buffer: list[int] = []
     osc_frame_samples: list[int] = []
 
-    real_time_file: bool = bool(args.file and not args.no_realtime)
+    real_time_file: bool = bool(args.audio_recording and not args.no_realtime)
 
     AUDIO_CHUNK_BYTES = 1024 * 4   # 1024 stereo frames × 4 bytes/frame (2ch × 2 bytes/sample)
     chunk_duration_s  = AUDIO_CHUNK_BYTES / 4 / actual_rate   # wall-clock time per chunk
@@ -212,7 +212,7 @@ def _decode_loop(
     while True:
         raw_audio = audio_source.read(AUDIO_CHUNK_BYTES)
         if not raw_audio:
-            ui.log('End of recording.' if args.file else 'Audio capture ended unexpectedly')
+            ui.log('End of recording.' if args.audio_recording else 'Audio capture ended unexpectedly')
             break
 
         channel_byte_offset = audio_channel * 2
@@ -332,13 +332,13 @@ def main() -> None:
     args = _parse_args()
 
     # Load transmitter profile
-    if args.config:
+    if args.profile:
         try:
-            profile = load_profile(args.config)
+            profile = load_profile(args.profile)
         except (ValueError, KeyError) as exc:
-            sys.exit(f'error: invalid profile {args.config!r}: {exc}')
+            sys.exit(f'error: invalid profile {args.profile!r}: {exc}')
         except OSError as exc:
-            sys.exit(f'error: cannot read profile {args.config!r}: {exc}')
+            sys.exit(f'error: cannot read profile {args.profile!r}: {exc}')
     else:
         profile = Profile()
 
@@ -396,15 +396,15 @@ def main() -> None:
 
     channel_name = 'left' if audio_channel == 0 else 'right'
     inv_note     = ', inverted' if audio_invert else ''
-    ui.log(f'{"File" if args.file else "Capturing from"}: {source_label}  '
+    ui.log(f'{"File" if args.audio_recording else "Capturing from"}: {source_label}  '
            f'({actual_rate} Hz, {channel_name} channel{inv_note})')
 
     # Open audio stream
-    if args.file:
-        audio_file, actual_rate = open_audio_file(args.file, actual_rate)
+    if args.audio_recording:
+        audio_file, actual_rate = open_audio_file(args.audio_recording, actual_rate)
         audio_source: IO[bytes] = audio_file
     else:
-        audio_capture_proc = start_audio_capture(args.device, actual_rate)
+        audio_capture_proc = start_audio_capture(args.audio_source, actual_rate)
         audio_source = audio_capture_proc.stdout  # type: ignore[assignment]
 
     ppm_decoder = PpmDecoder(

@@ -65,9 +65,9 @@ virtual joystick, and runs until interrupted with Ctrl-C.
 
 ```
 Source (mutually exclusive):
-  -d, --device NAME    PipeWire/PulseAudio source name (default: auto-detect)
-  -f, --file PATH      Replay a .wav or raw s16le stereo recording
-                       (WAV: sample rate is read from the file header)
+  -s, --audio-source NAME       PipeWire/PulseAudio source name (default: auto-detect)
+  -r, --audio-recording PATH   Replay a .wav or raw s16le stereo recording
+                               (WAV: sample rate is read from the file header)
 
 Display:
   -m, --monitor        Live channel values in a fixed status line
@@ -77,7 +77,7 @@ Display:
 Behaviour:
   --no-joystick        Decode without opening /dev/uinput
   --no-mixer           Skip ALSA Input Source switching
-  --no-realtime        With --file: consume as fast as possible
+  --no-realtime        With --audio-recording: consume as fast as possible
   --threshold N        int16 midpoint for HIGH/LOW detection (default: 0)
   --hysteresis N       int16 dead zone around --threshold (default: 4000)
   --rate HZ            Sample rate in Hz (default: 48000)
@@ -102,7 +102,7 @@ python3 record_ppm.py --name sweep --duration 3   # 3 s → testdata/sweep.wav
 A profile configures the channel mapping and signal timing for your transmitter.
 
 ```bash
-python3 -m ppm2hid --config profiles/absima_cr10p.toml
+python3 -m ppm2hid --profile profiles/absima_cr10p.toml
 ```
 
 See `profiles/absima_cr10p.toml` for a working example with all sections and fields.
