@@ -88,13 +88,15 @@ class TestLoadProfileAbsima(unittest.TestCase):
         ch = self.profile.channel_map[1]
         self.assertEqual(ch[0], 'axis')
         self.assertEqual(ch[1], 0x01)   # ABS_Y
-        self.assertEqual(len(ch), 2)    # not inverted
+        self.assertEqual(len(ch), 3)    # inverted
+        self.assertTrue(ch[2])
 
-    def test_ch7_is_three_pos(self) -> None:
+    def test_ch7_is_n_pos(self) -> None:
         ch = self.profile.channel_map[6]
-        self.assertEqual(ch[0], 'three_pos')
-        self.assertEqual(ch[1], 0x136)  # BTN_TL
-        self.assertEqual(ch[2], 0x137)  # BTN_TR
+        self.assertEqual(ch[0], 'n_pos')
+        self.assertEqual(ch[1][0], 0x136)  # BTN_TL (low threshold button)
+        self.assertEqual(ch[1][1], 0x137)  # BTN_TR (high threshold button)
+        self.assertEqual(len(ch[2]), 2)    # two thresholds for three positions
 
     def test_monitor_labels_count(self) -> None:
         self.assertEqual(len(self.profile.monitor_labels), 8)
@@ -196,6 +198,71 @@ class TestLoadProfileValidation(unittest.TestCase):
         try:
             with self.assertRaises((KeyError, ValueError)):
                 load_profile(toml)
+        finally:
+            os.unlink(toml)
+
+    def test_n_pos_with_explicit_thresholds(self) -> None:
+        toml = _write_toml(
+            '[[channel]]\nindex = 1\ntype = "n_pos"\n'
+            'codes = ["BTN_SOUTH", "BTN_EAST", "BTN_NORTH"]\n'
+            'thresholds_us = [1200, 1500, 1800]\n'
+        )
+        try:
+            p = load_profile(toml)
+            ch = p.channel_map[0]
+            self.assertEqual(ch[0], 'n_pos')
+            self.assertEqual(len(ch[1]), 3)
+            self.assertEqual(ch[2], (1200, 1500, 1800))
+        finally:
+            os.unlink(toml)
+
+    def test_n_pos_auto_thresholds(self) -> None:
+        toml = _write_toml(
+            '[[channel]]\nindex = 1\ntype = "n_pos"\n'
+            'codes = ["BTN_SOUTH", "BTN_EAST"]\n'
+        )
+        try:
+            p = load_profile(toml)
+            ch = p.channel_map[0]
+            self.assertEqual(ch[0], 'n_pos')
+            self.assertEqual(len(ch[2]), 2)   # 2 thresholds for 3 positions
+        finally:
+            os.unlink(toml)
+
+    def test_n_pos_too_many_codes_raises(self) -> None:
+        toml = _write_toml(
+            '[[channel]]\nindex = 1\ntype = "n_pos"\n'
+            'codes = ["BTN_SOUTH", "BTN_EAST", "BTN_NORTH", "BTN_WEST", "BTN_TL", "BTN_TR"]\n'
+        )
+        try:
+            with self.assertRaises(ValueError):
+                load_profile(toml)
+        finally:
+            os.unlink(toml)
+
+    def test_n_pos_threshold_count_mismatch_raises(self) -> None:
+        toml = _write_toml(
+            '[[channel]]\nindex = 1\ntype = "n_pos"\n'
+            'codes = ["BTN_SOUTH", "BTN_EAST"]\n'
+            'thresholds_us = [1300]\n'
+        )
+        try:
+            with self.assertRaises(ValueError):
+                load_profile(toml)
+        finally:
+            os.unlink(toml)
+
+    def test_three_pos_alias_loads_as_n_pos(self) -> None:
+        toml = _write_toml(
+            '[[channel]]\nindex = 1\ntype = "three_pos"\n'
+            'low_code = "BTN_TL"\nhigh_code = "BTN_TR"\n'
+        )
+        try:
+            p = load_profile(toml)
+            ch = p.channel_map[0]
+            self.assertEqual(ch[0], 'n_pos')
+            self.assertEqual(ch[1], (0x136, 0x137))
+            self.assertEqual(len(ch[2]), 2)
         finally:
             os.unlink(toml)
 

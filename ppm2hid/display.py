@@ -127,8 +127,6 @@ def _build_monitor_line(ppm_frame: list[int], state: ChannelOutputState | None =
     axis_min = profile.axis_min_us
     axis_max = profile.axis_max_us
     btn_thr  = profile.button_threshold_us
-    sl_lo    = profile.slider_low_threshold_us
-    sl_hi    = profile.slider_high_threshold_us
 
     parts = []
     for channel_index, channel_def in enumerate(cm):
@@ -140,8 +138,8 @@ def _build_monitor_line(ppm_frame: list[int], state: ChannelOutputState | None =
         if channel_index >= len(ppm_frame):
             if channel_type == 'axis':
                 parts.append(f'{label}:[------]')
-            elif channel_type == 'three_pos':
-                parts.append(f'{label}: -- ')
+            elif channel_type == 'n_pos':
+                parts.append(f'{label}:--')
             else:
                 parts.append(f'{label}:?')
             continue
@@ -161,23 +159,13 @@ def _build_monitor_line(ppm_frame: list[int], state: ChannelOutputState | None =
                 pressed = raw_us > btn_thr
             parts.append(f'{label}:{"■" if pressed else "□"}')
 
-        elif channel_type == 'three_pos':
-            lo, hi = channel_def[1], channel_def[2]
+        elif channel_type == 'n_pos':
+            codes, thresholds = channel_def[1], channel_def[2]
             if state is not None:
-                if state.button_states[hi]:    # both pressed → physical high
-                    pos = 'HI '
-                elif state.button_states[lo]:  # only lo pressed → physical mid
-                    pos = 'MID'
-                else:                          # neither → physical low/rest
-                    pos = 'LOW'
+                pos = sum(1 for btn in codes if state.button_states[btn])
             else:
-                if raw_us > sl_hi:
-                    pos = 'HI '
-                elif raw_us > sl_lo:
-                    pos = 'MID'
-                else:
-                    pos = 'LOW'
-            parts.append(f'{label}:{pos}({raw_us})')
+                pos = sum(1 for t in thresholds if raw_us > t)
+            parts.append(f'{label}:P{pos}({raw_us})')
 
     hz_tag = f'  [{hz:.0f}Hz]' if hz > 0 else ''
     return ' '.join(parts) + hz_tag

@@ -98,20 +98,20 @@ class Profile:
         self.channel_min_us           = 500
         self.channel_max_us           = 2_100
         # Channel map — each entry is a tuple whose first element is the type:
-        #   ('axis',      abs_code)           – proportional axis
-        #   ('axis',      abs_code, True)     – proportional axis, inverted
-        #   ('button',    btn_code)           – momentary switch
-        #   ('three_pos', low_btn, high_btn)  – three-position slider
-        #   None                              – unmapped slot
+        #   ('axis',  abs_code)                          – proportional axis
+        #   ('axis',  abs_code, True)                    – proportional axis, inverted
+        #   ('button', btn_code)                         – momentary switch
+        #   ('n_pos', (btn_code, ...), (threshold_us, ...))  – n-position slider (n ≤ 6)
+        #   None                                         – unmapped slot
         self.channel_map = [
-            ('axis',      ABS_X),                  # ch1 steering
-            ('axis',      ABS_Y, True),             # ch2 throttle (inverted)
-            ('button',    BTN_SW_CH3),              # ch3 momentary
-            ('button',    BTN_SW_CH4),              # ch4 momentary
-            ('axis',      ABS_RX),                  # ch5 aux axis
-            ('axis',      ABS_RY),                  # ch6 aux axis
-            ('three_pos', BTN_SL_LO, BTN_SL_HI),   # ch7 slider
-            ('button',    BTN_SW_CH8),              # ch8 momentary
+            ('axis',   ABS_X),                                      # ch1 steering
+            ('axis',   ABS_Y, True),                                 # ch2 throttle (inverted)
+            ('button', BTN_SW_CH3),                                  # ch3 momentary
+            ('button', BTN_SW_CH4),                                  # ch4 momentary
+            ('axis',   ABS_RX),                                      # ch5 aux axis
+            ('axis',   ABS_RY),                                      # ch6 aux axis
+            ('n_pos',  (BTN_SL_LO, BTN_SL_HI), (1_300, 1_700)),    # ch7 slider
+            ('button', BTN_SW_CH8),                                  # ch8 momentary
         ]
         # Per-channel display labels aligned with channel_map
         self.monitor_labels = ['STR', 'THR', ' c3', ' c4', ' RX', ' RY', ' c7', ' c8']
@@ -173,14 +173,33 @@ def load_profile(path: str) -> Profile:
             elif ch_type == 'button':
                 code = _resolve_code(ch['code'])
                 p.channel_map[i] = ('button', code)
+            elif ch_type == 'n_pos':
+                codes_raw = ch.get('codes', [])
+                if not codes_raw:
+                    raise ValueError(f'channel {idx}: n_pos requires a "codes" list')
+                if not 1 <= len(codes_raw) <= 5:
+                    raise ValueError(
+                        f'channel {idx}: n_pos "codes" must have 1–5 entries, got {len(codes_raw)}'
+                    )
+                codes = tuple(_resolve_code(c) for c in codes_raw)
+                thresholds_raw = ch.get('thresholds_us')
+                if thresholds_raw is not None:
+                    if len(thresholds_raw) != len(codes):
+                        raise ValueError(
+                            f'channel {idx}: thresholds_us must have {len(codes)} entries'
+                        )
+                    thresholds = tuple(int(t) for t in thresholds_raw)
+                else:
+                    n = len(codes) + 1
+                    span = p.axis_max_us - p.axis_min_us
+                    thresholds = tuple(p.axis_min_us + span * k // n for k in range(1, n))
+                p.channel_map[i] = ('n_pos', codes, thresholds)
             elif ch_type == 'three_pos':
                 lo = _resolve_code(ch['low_code'])
                 hi = _resolve_code(ch['high_code'])
-                if 'low_threshold_us' in ch:
-                    p.slider_low_threshold_us = int(ch['low_threshold_us'])
-                if 'high_threshold_us' in ch:
-                    p.slider_high_threshold_us = int(ch['high_threshold_us'])
-                p.channel_map[i] = ('three_pos', lo, hi)
+                lo_thresh = int(ch.get('low_threshold_us', p.slider_low_threshold_us))
+                hi_thresh = int(ch.get('high_threshold_us', p.slider_high_threshold_us))
+                p.channel_map[i] = ('n_pos', (lo, hi), (lo_thresh, hi_thresh))
             else:
                 raise ValueError(f'channel {idx}: unknown type {ch_type!r}')
 

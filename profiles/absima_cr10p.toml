@@ -58,11 +58,11 @@ code  = "ABS_RY"
 label = " RY"
 
 [[channel]]
-index     = 7
-type      = "three_pos"
-low_code  = "BTN_TL"   # LB — slider lo/mid boundary
-high_code = "BTN_TR"   # RB — slider mid/hi boundary
-label     = " c7"
+index         = 7
+type          = "n_pos"
+codes         = ["BTN_TL", "BTN_TR"]
+thresholds_us = [1300, 1700]
+label         = " c7"
 
 [[channel]]
 index = 8

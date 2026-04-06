@@ -120,21 +120,21 @@ class TestBuildMonitorLine(unittest.TestCase):
         self.assertIn(' c3:□', line)
 
     def test_slider_low_without_state(self) -> None:
-        frame = _full_frame()   # ch7 = 1100 µs (≤ _PROFILE.slider_low_threshold_us=1300)
+        frame = _full_frame()   # ch7 = 1100 µs (≤ threshold 1300) → position 0
         line  = _build_monitor_line(frame)
-        self.assertIn(' c7:LOW', line)
+        self.assertIn(' c7:P0', line)
 
     def test_slider_mid_without_state(self) -> None:
         frame    = _full_frame()
-        frame[6] = _PROFILE.slider_low_threshold_us + 1   # just above low threshold → MID
+        frame[6] = _PROFILE.slider_low_threshold_us + 1   # just above low threshold → position 1
         line     = _build_monitor_line(frame)
-        self.assertIn(' c7:MID', line)
+        self.assertIn(' c7:P1', line)
 
     def test_slider_hi_without_state(self) -> None:
         frame    = _full_frame()
-        frame[6] = _PROFILE.slider_high_threshold_us + 1   # above high threshold → HI
+        frame[6] = _PROFILE.slider_high_threshold_us + 1   # above high threshold → position 2
         line     = _build_monitor_line(frame)
-        self.assertIn(' c7:HI ', line)
+        self.assertIn(' c7:P2', line)
 
     def test_slider_with_state_low(self) -> None:
         state = ChannelOutputState()
@@ -142,7 +142,7 @@ class TestBuildMonitorLine(unittest.TestCase):
         state.button_states[BTN_SL_HI] = False
         frame = _full_frame()
         line  = _build_monitor_line(frame, state=state)
-        self.assertIn(' c7:LOW', line)
+        self.assertIn(' c7:P0', line)
 
     def test_slider_with_state_mid(self) -> None:
         state = ChannelOutputState()
@@ -150,7 +150,7 @@ class TestBuildMonitorLine(unittest.TestCase):
         state.button_states[BTN_SL_HI] = False
         frame = _full_frame()
         line  = _build_monitor_line(frame, state=state)
-        self.assertIn(' c7:MID', line)
+        self.assertIn(' c7:P1', line)
 
     def test_slider_with_state_hi(self) -> None:
         state = ChannelOutputState()
@@ -158,7 +158,7 @@ class TestBuildMonitorLine(unittest.TestCase):
         state.button_states[BTN_SL_HI] = True
         frame = _full_frame()
         line  = _build_monitor_line(frame, state=state)
-        self.assertIn(' c7:HI ', line)
+        self.assertIn(' c7:P2', line)
 
     def test_hz_tag_absent_when_zero(self) -> None:
         line = _build_monitor_line(_full_frame(), hz=0.0)
@@ -177,7 +177,7 @@ class TestBuildMonitorLine(unittest.TestCase):
     def test_short_frame_shows_placeholder_for_missing_slider(self) -> None:
         frame = _full_frame()[:2]
         line  = _build_monitor_line(frame)
-        self.assertIn(' c7: -- ', line)
+        self.assertIn(' c7:--', line)
 
 
 # ── _render_oscilloscope ─────────────────────────────────────────────────────

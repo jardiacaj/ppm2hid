@@ -37,9 +37,9 @@ def open_uinput_joystick(profile: Profile | None = None) -> int:
             all_abs.add(ch[1])
         elif ch[0] == 'button':
             all_btn.add(ch[1])
-        elif ch[0] == 'three_pos':
-            all_btn.add(ch[1])
-            all_btn.add(ch[2])
+        elif ch[0] == 'n_pos':
+            for btn_code in ch[1]:
+                all_btn.add(btn_code)
 
     if not any(0x120 <= c <= 0x12f for c in all_btn):
         print('Note: no BTN_JOYSTICK code in profile — '
@@ -130,9 +130,9 @@ class ChannelOutputState:
                 abs_codes.add(ch[1])
             elif ch[0] == 'button':
                 btn_codes.add(ch[1])
-            elif ch[0] == 'three_pos':
-                btn_codes.add(ch[1])
-                btn_codes.add(ch[2])
+            elif ch[0] == 'n_pos':
+                for btn_code in ch[1]:
+                    btn_codes.add(btn_code)
         self.axis_values   = {code: 1_500 for code in abs_codes}   # 1500 µs = centre
         self.button_states = {code: False for code in btn_codes}
 
@@ -156,8 +156,8 @@ def reset_joystick_to_neutral(fd: int, state: ChannelOutputState,
         elif ch[0] == 'button':
             state.button_states[ch[1]] = False
             _write_input_event(fd, EV_KEY, ch[1], 0)
-        elif ch[0] == 'three_pos':
-            for btn_code in (ch[1], ch[2]):
+        elif ch[0] == 'n_pos':
+            for btn_code in ch[1]:
                 state.button_states[btn_code] = False
                 _write_input_event(fd, EV_KEY, btn_code, 0)
     _flush_events(fd)
@@ -182,8 +182,6 @@ def emit_channel_events(fd: int, state: ChannelOutputState, ppm_frame: list[int]
     deadband       = profile.axis_deadband_us
     btn_threshold  = profile.button_threshold_us
     btn_hysteresis = profile.button_hysteresis_us
-    sl_lo          = profile.slider_low_threshold_us
-    sl_hi          = profile.slider_high_threshold_us
 
     transitions = []
 
@@ -215,16 +213,11 @@ def emit_channel_events(fd: int, state: ChannelOutputState, ppm_frame: list[int]
                 _write_input_event(fd, EV_KEY, btn_code, int(pressed))
                 transitions.append((channel_index + 1, btn_code, pressed))
 
-        elif channel_type == 'three_pos':
-            low_btn_code, high_btn_code = channel_def[1], channel_def[2]
-            # Hysteresis applied to each slider threshold independently.
-            lo_hys = btn_hysteresis if state.button_states[low_btn_code]  else -btn_hysteresis
-            hi_hys = btn_hysteresis if state.button_states[high_btn_code] else -btn_hysteresis
-            # low (~1100 µs) → 0 buttons; mid (~1500) → low button; high (~1900) → both
-            low_pressed  = raw_us > sl_lo - lo_hys
-            high_pressed = raw_us > sl_hi - hi_hys
-            for btn_code, pressed in ((low_btn_code, low_pressed),
-                                      (high_btn_code, high_pressed)):
+        elif channel_type == 'n_pos':
+            codes, thresholds = channel_def[1], channel_def[2]
+            for btn_code, thresh_us in zip(codes, thresholds):
+                hys = btn_hysteresis if state.button_states[btn_code] else -btn_hysteresis
+                pressed = raw_us > thresh_us - hys
                 if pressed != state.button_states[btn_code]:
                     state.button_states[btn_code] = pressed
                     _write_input_event(fd, EV_KEY, btn_code, int(pressed))

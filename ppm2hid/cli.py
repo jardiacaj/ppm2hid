@@ -119,8 +119,8 @@ def _parse_args() -> argparse.Namespace:
              f'higher rates (96000, 192000) improve timing precision',
     )
     ap.add_argument(
-        '--profile', default=None, metavar='PATH',
-        help='TOML transmitter profile (default: built-in mapping)',
+        '--profile', required=True, metavar='PATH',
+        help='TOML transmitter profile',
     )
     ap.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
     return ap.parse_args()
@@ -332,15 +332,12 @@ def main() -> None:
     args = _parse_args()
 
     # Load transmitter profile
-    if args.profile:
-        try:
-            profile = load_profile(args.profile)
-        except (ValueError, KeyError) as exc:
-            sys.exit(f'error: invalid profile {args.profile!r}: {exc}')
-        except OSError as exc:
-            sys.exit(f'error: cannot read profile {args.profile!r}: {exc}')
-    else:
-        profile = Profile()
+    try:
+        profile = load_profile(args.profile)
+    except (ValueError, KeyError) as exc:
+        sys.exit(f'error: invalid profile {args.profile!r}: {exc}')
+    except OSError as exc:
+        sys.exit(f'error: cannot read profile {args.profile!r}: {exc}')
 
     if not args.no_joystick and not os.path.exists('/dev/uinput'):
         sys.exit('error: /dev/uinput not found – is the uinput kernel module loaded?\n'
