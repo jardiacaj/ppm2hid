@@ -64,13 +64,15 @@ virtual joystick, and runs until interrupted with Ctrl-C.
 ## CLI reference
 
 ```
-Required:
+Profile (one required):
   --profile PATH       TOML transmitter profile
+  --autogenerate       Interactive wizard to create a new profile
 
 Source (mutually exclusive):
   -s, --audio-source NAME       PipeWire/PulseAudio source name (default: auto-detect)
   -r, --audio-recording PATH   Replay a .wav or raw s16le stereo recording
-                               (WAV: sample rate is read from the file header)
+                               (WAV: sample rate is read from the file header;
+                                not compatible with --autogenerate)
 
 Display:
   -m, --monitor        Live channel values in a fixed status line
@@ -83,6 +85,7 @@ Behaviour:
   --threshold N        int16 midpoint for HIGH/LOW detection (default: 0)
   --hysteresis N       int16 dead zone around --threshold (default: 4000)
   --rate HZ            Sample rate in Hz (default: 48000)
+  -o, --output PATH    Output path for the generated profile (with --autogenerate)
 ```
 
 Higher sample rates (`--rate 96000` or `--rate 192000`) improve pulse timing
@@ -213,10 +216,56 @@ python3 record_ppm.py --name sweep --duration 3   # 3 s → testdata/sweep.wav
 ## Profiles
 
 A profile configures the channel mapping and signal timing for your transmitter.
+Use an existing profile or generate one for your hardware with the wizard.
 
 ```bash
 python3 -m ppm2hid --profile profiles/absima_cr10p.toml
 ```
+
+### Generating a profile with the wizard
+
+Run `--autogenerate` to create a profile interactively:
+
+```bash
+python3 -m ppm2hid --autogenerate
+```
+
+The wizard proceeds in four phases:
+
+1. **Signal lock** — listens for a live PPM signal and locks the channel count.
+   Make sure the transmitter is on and connected before starting.
+
+2. **Channel configuration** — walks through each detected channel one by one.
+   For every channel:
+   - Choose the control type: `axis`, `button`, `n_pos` (multi-position slider),
+     or `skip` to leave the channel unmapped.
+   - Move the control through its full range when prompted, then press Enter.
+     The wizard shows the observed µs range live.
+   - Choose the output event code from a numbered list (axis codes for `axis`;
+     button codes for `button` / `n_pos`).
+   - For `axis`: confirm or change invert and label.
+   - For `n_pos`: choose the number of positions (2–6), a button code per
+     boundary, and accept or override the auto-spaced thresholds.
+   - Review the summary and accept (`Y`), skip (`n`), or redo the channel (`redo`).
+
+3. **Signal timing** — review and optionally adjust the 12 timing parameters
+   (pulse widths, deadband, sync window, …).  Press Enter at each prompt to
+   keep the default.
+
+4. **Save** — enter a device name and output path; the TOML file is written.
+
+To save to a specific path without being prompted:
+
+```bash
+python3 -m ppm2hid --autogenerate --output profiles/my_tx.toml
+```
+
+The display flags `--monitor`, `--debug`, and `--oscilloscope` work during the
+sweep phase and show live channel data above the status rows, same as in normal
+mode.
+
+`--autogenerate` requires a live audio source and is incompatible with
+`--audio-recording` and `--profile`.
 
 See `profiles/absima_cr10p.toml` for a working example with all sections and fields.
 

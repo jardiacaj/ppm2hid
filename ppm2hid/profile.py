@@ -91,8 +91,6 @@ class Profile:
         self.axis_deadband_us         = 42
         self.button_threshold_us      = 1_500
         self.button_hysteresis_us     = 21
-        self.slider_low_threshold_us  = 1_300
-        self.slider_high_threshold_us = 1_700
         self.sync_min_us              = 3_000
         self.sync_max_us              = 50_000
         self.channel_min_us           = 500
@@ -138,8 +136,7 @@ def load_profile(path: str) -> Profile:
     if sig := data.get('signal', {}):
         for field in ('axis_min_us', 'axis_max_us', 'axis_center_us',
                       'axis_deadband_us', 'button_threshold_us',
-                      'button_hysteresis_us', 'slider_low_threshold_us',
-                      'slider_high_threshold_us', 'sync_min_us', 'sync_max_us',
+                      'button_hysteresis_us', 'sync_min_us', 'sync_max_us',
                       'channel_min_us', 'channel_max_us'):
             if field in sig:
                 setattr(p, field, int(sig[field]))
@@ -197,8 +194,9 @@ def load_profile(path: str) -> Profile:
             elif ch_type == 'three_pos':
                 lo = _resolve_code(ch['low_code'])
                 hi = _resolve_code(ch['high_code'])
-                lo_thresh = int(ch.get('low_threshold_us', p.slider_low_threshold_us))
-                hi_thresh = int(ch.get('high_threshold_us', p.slider_high_threshold_us))
+                span = p.axis_max_us - p.axis_min_us
+                lo_thresh = int(ch.get('low_threshold_us',  p.axis_min_us + span * 1 // 3))
+                hi_thresh = int(ch.get('high_threshold_us', p.axis_min_us + span * 2 // 3))
                 p.channel_map[i] = ('n_pos', (lo, hi), (lo_thresh, hi_thresh))
             else:
                 raise ValueError(f'channel {idx}: unknown type {ch_type!r}')

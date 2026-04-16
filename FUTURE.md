@@ -1,7 +1,5 @@
 # Tasks
 
-* Help me understand how to unlock high sample rates (192kHz). Just setting it in the program does not seem to be enough, the read data is still 48kHz. Add guide to readme file
-
 # Future ideas
 
 ## Support modern Mac and Windows

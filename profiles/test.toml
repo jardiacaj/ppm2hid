@@ -1,0 +1,65 @@
+[source]
+device_name = "Test"
+
+[signal]
+axis_min_us                      = 1100
+axis_max_us                      = 1900
+axis_center_us                   = 1500
+axis_deadband_us                 = 42
+button_threshold_us              = 1500
+button_hysteresis_us             = 21
+slider_low_threshold_us          = 1300
+slider_high_threshold_us         = 1700
+sync_min_us                      = 3000
+sync_max_us                      = 50000
+channel_min_us                   = 500
+channel_max_us                   = 2100
+
+[[channel]]
+index = 1
+type  = "axis"
+code  = "ABS_X"
+label = "c1"
+
+[[channel]]
+index = 2
+type  = "axis"
+code  = "ABS_Y"
+label = "c2"
+
+[[channel]]
+index = 3
+type  = "button"
+code  = "BTN_SOUTH"
+label = "c3"
+
+[[channel]]
+index = 4
+type  = "button"
+code  = "BTN_EAST"
+label = "c4"
+
+[[channel]]
+index = 5
+type  = "axis"
+code  = "ABS_RX"
+label = "c5"
+
+[[channel]]
+index = 6
+type  = "axis"
+code  = "ABS_RY"
+label = "c6"
+
+[[channel]]
+index = 7
+type  = "n_pos"
+codes         = ["BTN_TL", "BTN_TR"]
+thresholds_us = [1366, 1633]
+label = "c7"
+
+[[channel]]
+index = 8
+type  = "button"
+code  = "BTN_NORTH"
+label = "c8"

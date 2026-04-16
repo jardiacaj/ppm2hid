@@ -119,8 +119,16 @@ def _parse_args() -> argparse.Namespace:
              f'higher rates (96000, 192000) improve timing precision',
     )
     ap.add_argument(
-        '--profile', required=True, metavar='PATH',
-        help='TOML transmitter profile',
+        '--profile', default=None, metavar='PATH',
+        help='TOML transmitter profile (required unless --autogenerate is used)',
+    )
+    ap.add_argument(
+        '--autogenerate', action='store_true',
+        help='Run the interactive profile generation wizard to create a new TOML profile',
+    )
+    ap.add_argument(
+        '-o', '--output', default=None, metavar='PATH',
+        help='Destination path for the generated profile (used with --autogenerate)',
     )
     ap.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
     return ap.parse_args()
@@ -331,22 +339,42 @@ def _decode_loop(
 def main() -> None:
     args = _parse_args()
 
-    # Load transmitter profile
-    try:
-        profile = load_profile(args.profile)
-    except (ValueError, KeyError) as exc:
-        sys.exit(f'error: invalid profile {args.profile!r}: {exc}')
-    except OSError as exc:
-        sys.exit(f'error: cannot read profile {args.profile!r}: {exc}')
+    # Validate --autogenerate / --profile / --audio-recording compatibility
+    if args.autogenerate:
+        if args.profile is not None:
+            sys.exit('error: --autogenerate and --profile are mutually exclusive')
+        if args.audio_recording is not None:
+            sys.exit('error: --autogenerate requires live audio; '
+                     '--audio-recording is not supported')
+    elif args.profile is None:
+        sys.exit('error: --profile is required '
+                 '(or use --autogenerate to create one)')
 
-    if not args.no_joystick and not os.path.exists('/dev/uinput'):
+    # Load transmitter profile (skipped for --autogenerate)
+    profile: Profile | None = None
+    if not args.autogenerate:
+        try:
+            profile = load_profile(args.profile)
+        except (ValueError, KeyError) as exc:
+            sys.exit(f'error: invalid profile {args.profile!r}: {exc}')
+        except OSError as exc:
+            sys.exit(f'error: cannot read profile {args.profile!r}: {exc}')
+
+    if not args.autogenerate and not args.no_joystick and not os.path.exists('/dev/uinput'):
         sys.exit('error: /dev/uinput not found – is the uinput kernel module loaded?\n'
                  '       use --no-joystick to run without creating a virtual device')
 
     # Probe or configure audio source
     audio_channel, audio_invert, actual_rate, source_label = _setup_audio_source(args)
 
+    # Autogenerate mode: hand off to the wizard and exit
+    if args.autogenerate:
+        from .wizard import autogenerate_profile
+        autogenerate_profile(args, audio_channel, audio_invert, actual_rate, source_label)
+        return
+
     # Create virtual joystick (or skip with --no-joystick)
+    assert profile is not None
     if profile.device_name:
         print(f'Profile: {profile.device_name}')
     uinput_fd: int | None = None
