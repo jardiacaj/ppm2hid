@@ -17,7 +17,9 @@ The audio source is auto-detected — the tool probes each available
 PipeWire/PulseAudio source and picks the one carrying a valid PPM signal.
 Inverted (LOW-active) PPM signals are also detected and handled automatically.
 
-Tested hardware: **Absima CR10P / Dumbo RC DDF-350** transmitter.
+Tested hardware: **Absima CR10P / Dumbo RC DDF-350** transmitter with **Absima R10WP** receiver (identical to DumboRC P10F(G)).
+
+Related project: [ppm2hid_arduino](https://github.com/jardiacaj/ppm2hid_arduino) — equivalent firmware for Arduino Leonardo / Pro Micro; reads PPM directly from the receiver without an audio interface and works on any OS.
 
 ## Requirements
 
