@@ -88,7 +88,7 @@ class Profile:
         self.axis_min_us              = 1_100
         self.axis_max_us              = 1_900
         self.axis_center_us           = 1_500
-        self.axis_deadband_us         = 42
+        self.axis_deadband_us         = 2
         self.button_threshold_us      = 1_500
         self.button_hysteresis_us     = 21
         self.slider_low_threshold_us  = 1_300

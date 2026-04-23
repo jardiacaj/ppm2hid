@@ -133,8 +133,9 @@ class ChannelOutputState:
             elif ch[0] == 'n_pos':
                 for btn_code in ch[1]:
                     btn_codes.add(btn_code)
-        self.axis_values   = {code: 1_500 for code in abs_codes}   # 1500 µs = centre
-        self.button_states = {code: False for code in btn_codes}
+        self.axis_values   = {code: 1_500   for code in abs_codes}  # last-sent value (int µs)
+        self.axis_smoothed = {code: 1_500.0 for code in abs_codes}  # EMA accumulator (float µs)
+        self.button_states = {code: False   for code in btn_codes}
 
 
 def reset_joystick_to_neutral(fd: int, state: ChannelOutputState,
@@ -151,7 +152,8 @@ def reset_joystick_to_neutral(fd: int, state: ChannelOutputState,
         if ch is None:
             continue
         if ch[0] == 'axis':
-            state.axis_values[ch[1]] = center
+            state.axis_values[ch[1]]   = center
+            state.axis_smoothed[ch[1]] = float(center)
             _write_input_event(fd, EV_ABS, ch[1], center)
         elif ch[0] == 'button':
             state.button_states[ch[1]] = False
@@ -198,9 +200,15 @@ def emit_channel_events(fd: int, state: ChannelOutputState, ppm_frame: list[int]
             abs_code = channel_def[1]
             invert   = len(channel_def) > 2 and channel_def[2]
             value_us = (axis_min + axis_max - raw_us) if invert else raw_us
-            if abs(value_us - state.axis_values[abs_code]) >= deadband:
-                state.axis_values[abs_code] = value_us
-                _write_input_event(fd, EV_ABS, abs_code, value_us)
+            # EMA (α=0.5) suppresses per-sample jitter that arises from audio
+            # quantisation without blocking any part of the axis range.
+            # The float accumulator is rounded only when comparing / emitting.
+            smoothed_f = 0.5 * value_us + 0.5 * state.axis_smoothed[abs_code]
+            state.axis_smoothed[abs_code] = smoothed_f
+            smoothed = round(smoothed_f)
+            if abs(smoothed - state.axis_values[abs_code]) >= deadband:
+                state.axis_values[abs_code] = smoothed
+                _write_input_event(fd, EV_ABS, abs_code, smoothed)
 
         elif channel_type == 'button':
             btn_code = channel_def[1]
