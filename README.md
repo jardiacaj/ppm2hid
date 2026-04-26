@@ -100,8 +100,9 @@ Higher sample rates improve PPM pulse timing precision:
 | 96 000 Hz   | ~10.4 µs        | ±5 µs             | ~77                  |
 | 192 000 Hz  | ~5.2 µs         | ±2.5 µs           | ~154                 |
 
-\* Across the default 800 µs axis range (1100–1900 µs), after EMA smoothing with `axis_deadband_us = 2`.
-The previous default of `axis_deadband_us = 42` capped resolution at ~19 steps regardless of sample rate.
+\* Across the default 800 µs axis range (1100–1900 µs), after EMA smoothing.  The default
+`axis_deadzone_pct = 0` does not constrain resolution; raising it snaps near-centre
+values to the centre but leaves precision near the extremes intact.
 For reference, a hardware Arduino (ATmega32U4, 4 µs `micros()` resolution) achieves ~200 steps.
 
 ### Why `--rate` alone is not enough
@@ -243,7 +244,7 @@ Absima CR10P defaults.
 axis_min_us              = 1100   # minimum expected channel pulse width
 axis_max_us              = 1900   # maximum expected channel pulse width
 axis_center_us           = 1500   # neutral / centre value for axes
-axis_deadband_us         = 2      # axis events suppressed within ±deadband of last EMA-smoothed value
+axis_deadzone_pct        = 0      # central deadzone, % of half-range; values within ±pct of centre snap to centre
 button_threshold_us      = 1500   # raw PPM value above which a button is "pressed"
 button_hysteresis_us     = 21     # hysteresis around button_threshold to prevent jitter
 slider_low_threshold_us  = 1300   # three_pos alias default: LOW→MID boundary

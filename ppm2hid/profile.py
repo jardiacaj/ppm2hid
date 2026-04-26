@@ -88,7 +88,7 @@ class Profile:
         self.axis_min_us              = 1_100
         self.axis_max_us              = 1_900
         self.axis_center_us           = 1_500
-        self.axis_deadband_us         = 2
+        self.axis_deadzone_pct        = 0    # central deadzone, % of half-range; 0 disables
         self.button_threshold_us      = 1_500
         self.button_hysteresis_us     = 21
         self.slider_low_threshold_us  = 1_300
@@ -137,7 +137,7 @@ def load_profile(path: str) -> Profile:
 
     if sig := data.get('signal', {}):
         for field in ('axis_min_us', 'axis_max_us', 'axis_center_us',
-                      'axis_deadband_us', 'button_threshold_us',
+                      'axis_deadzone_pct', 'button_threshold_us',
                       'button_hysteresis_us', 'slider_low_threshold_us',
                       'slider_high_threshold_us', 'sync_min_us', 'sync_max_us',
                       'channel_min_us', 'channel_max_us'):

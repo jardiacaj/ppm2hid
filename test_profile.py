@@ -51,7 +51,7 @@ class TestDefaultProfile(unittest.TestCase):
         self.assertEqual(p.axis_min_us,              1_100)
         self.assertEqual(p.axis_max_us,              1_900)
         self.assertEqual(p.axis_center_us,           1_500)
-        self.assertEqual(p.axis_deadband_us,         42)
+        self.assertEqual(p.axis_deadzone_pct,        0)
         self.assertEqual(p.button_threshold_us,      1_500)
         self.assertEqual(p.button_hysteresis_us,     21)
         self.assertEqual(p.slider_low_threshold_us,  1_300)

@@ -8,7 +8,7 @@ No /dev/uinput access is required.
 
 Coverage:
   - EV_SYN is always flushed, even when no channels changed
-  - Axis passthrough and deadband suppression
+  - Axis passthrough and central deadzone snap-to-centre
   - Axis inversion (ch2 / ABS_Y)
   - Button press and release with hysteresis
   - Hysteresis: value exactly at threshold does not trigger in released state
@@ -72,10 +72,11 @@ class _WriteSink:
 
 
 def _emit(sink: _WriteSink, state: ChannelOutputState,
-          ppm_frame: list[int]) -> list[tuple[int, int, bool]]:
+          ppm_frame: list[int],
+          profile: Profile | None = None) -> list[tuple[int, int, bool]]:
     """Call emit_channel_events with fd=1 while os.write is patched."""
     with patch('ppm2hid.uinput.os.write', side_effect=sink.write):
-        return emit_channel_events(1, state, ppm_frame)
+        return emit_channel_events(1, state, ppm_frame, profile)
 
 
 def _make_frame(*values: int) -> list[int]:
@@ -98,8 +99,8 @@ class TestEvSync(unittest.TestCase):
     def test_syn_sent_when_nothing_changed(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
-        # First frame: axes at centre, buttons at released → deadband skips axes,
-        # buttons don't change. Only EV_SYN should appear.
+        # First frame: axes at centre (== last-emitted value), buttons at released
+        # (no transition). Only EV_SYN should appear.
         _emit(sink, state, _make_frame(_PROFILE.axis_center_us))
         events = sink.events()
         syn_events = [e for e in events if e[0] == EV_SYN]
@@ -121,30 +122,49 @@ class TestAxisPassthrough(unittest.TestCase):
     def test_large_move_emits_abs_event(self) -> None:
         sink  = _WriteSink()
         state = ChannelOutputState()
+        # Pre-load EMA accumulator so the smoothed value matches the input
+        # on the first call (otherwise the first frame lands halfway between
+        # the default 1500.0 accumulator and the new value).
+        state.axis_smoothed[ABS_X] = float(_PROFILE.axis_max_us)
         _emit(sink, state, _make_frame(_PROFILE.axis_max_us))   # ch1 = 1900
         self.assertIn((EV_ABS, ABS_X, _PROFILE.axis_max_us), sink.events())
 
-    def test_small_move_within_deadband_suppressed(self) -> None:
+    def test_value_inside_deadzone_snaps_to_centre(self) -> None:
+        """With a non-zero deadzone, near-centre values snap to the exact centre."""
+        profile = Profile()
+        profile.axis_deadzone_pct = 10   # half-range 400 µs × 10% = ±40 µs
         sink  = _WriteSink()
         state = ChannelOutputState()
-        # First move establishes baseline at _PROFILE.axis_center_us (deadband applied to Δ)
-        _emit(sink, state, _make_frame(_PROFILE.axis_max_us))
-        sink.reset()
-        # Tiny nudge: less than _PROFILE.axis_deadband_us from last emitted value
-        tiny = _PROFILE.axis_max_us - (_PROFILE.axis_deadband_us - 1)
-        _emit(sink, state, _make_frame(tiny))
+        # Pre-load the EMA accumulator so smoothed_f equals the input on first call.
+        state.axis_smoothed[ABS_X] = 1520.0
+        # Force last-emitted away from centre so a snap-to-centre is observable.
+        state.axis_values[ABS_X]   = 1900
+        _emit(sink, state, _make_frame(1520), profile=profile)
         abs_events = [e for e in sink.events() if e[0] == EV_ABS and e[1] == ABS_X]
-        self.assertEqual(abs_events, [], "Deadband should suppress tiny movement")
+        self.assertEqual(abs_events, [(EV_ABS, ABS_X, profile.axis_center_us)],
+                         "Value inside deadzone should snap to centre")
 
-    def test_move_exactly_at_deadband_emits(self) -> None:
+    def test_value_outside_deadzone_passes_through(self) -> None:
+        profile = Profile()
+        profile.axis_deadzone_pct = 5    # half-range 400 µs × 5% = ±20 µs
         sink  = _WriteSink()
         state = ChannelOutputState()
-        _emit(sink, state, _make_frame(_PROFILE.axis_max_us))
-        sink.reset()
-        at_boundary = _PROFILE.axis_max_us - _PROFILE.axis_deadband_us
-        _emit(sink, state, _make_frame(at_boundary))
+        state.axis_smoothed[ABS_X] = 1530.0
+        state.axis_values[ABS_X]   = profile.axis_center_us
+        _emit(sink, state, _make_frame(1530), profile=profile)
         abs_events = [e for e in sink.events() if e[0] == EV_ABS and e[1] == ABS_X]
-        self.assertTrue(abs_events, "Movement exactly at deadband should emit")
+        self.assertEqual(abs_events, [(EV_ABS, ABS_X, 1530)],
+                         "Value outside deadzone should pass through unchanged")
+
+    def test_default_profile_has_no_deadzone(self) -> None:
+        """Default axis_deadzone_pct = 0 disables the snap entirely."""
+        self.assertEqual(_PROFILE.axis_deadzone_pct, 0)
+        sink  = _WriteSink()
+        state = ChannelOutputState()
+        state.axis_smoothed[ABS_X] = 1505.0
+        state.axis_values[ABS_X]   = 1900
+        _emit(sink, state, _make_frame(1505))
+        self.assertIn((EV_ABS, ABS_X, 1505), sink.events())
 
 
 class TestAxisInversion(unittest.TestCase):
@@ -154,32 +174,33 @@ class TestAxisInversion(unittest.TestCase):
         return _make_frame(_PROFILE.axis_center_us, raw_us)
 
     def test_inversion_at_min(self) -> None:
+        expected = _PROFILE.axis_min_us + _PROFILE.axis_max_us - _PROFILE.axis_min_us   # = _PROFILE.axis_max_us
         sink  = _WriteSink()
         state = ChannelOutputState()
+        # Pre-load EMA accumulator with the post-inversion target so the
+        # smoothed value reaches it on the first call.
+        state.axis_smoothed[ABS_Y] = float(expected)
         _emit(sink, state, self._ch2_frame(_PROFILE.axis_min_us))
-        expected = _PROFILE.axis_min_us + _PROFILE.axis_max_us - _PROFILE.axis_min_us   # = _PROFILE.axis_max_us
         self.assertIn((EV_ABS, ABS_Y, expected), sink.events())
 
     def test_inversion_at_max(self) -> None:
+        expected = _PROFILE.axis_min_us + _PROFILE.axis_max_us - _PROFILE.axis_max_us   # = _PROFILE.axis_min_us
         sink  = _WriteSink()
         state = ChannelOutputState()
+        state.axis_smoothed[ABS_Y] = float(expected)
         _emit(sink, state, self._ch2_frame(_PROFILE.axis_max_us))
-        expected = _PROFILE.axis_min_us + _PROFILE.axis_max_us - _PROFILE.axis_max_us   # = _PROFILE.axis_min_us
         self.assertIn((EV_ABS, ABS_Y, expected), sink.events())
 
-    def test_inversion_at_centre_emitted_on_first_move(self) -> None:
-        """Centre inverts to centre; first move from ChannelOutputState default triggers emit."""
+    def test_inversion_at_centre_emits_centre(self) -> None:
+        """Centre raw value, inverted, is still centre."""
         sink  = _WriteSink()
         state = ChannelOutputState()
-        # Move away from centre first, then come back exactly to centre
-        _emit(sink, state, self._ch2_frame(_PROFILE.axis_max_us))
-        sink.reset()
-        # inverted centre = AXIS_MIN + AXIS_MAX - AXIS_CENTER = AXIS_CENTER
+        state.axis_smoothed[ABS_Y] = float(_PROFILE.axis_center_us)
+        # Force last-emitted away from centre so the centre emission is observable.
+        state.axis_values[ABS_Y]   = _PROFILE.axis_max_us
         _emit(sink, state, self._ch2_frame(_PROFILE.axis_center_us))
-        # May or may not emit depending on deadband; just check no wrong value
         abs_y = [e for e in sink.events() if e[0] == EV_ABS and e[1] == ABS_Y]
-        for _, _, v in abs_y:
-            self.assertEqual(v, _PROFILE.axis_center_us)
+        self.assertEqual(abs_y, [(EV_ABS, ABS_Y, _PROFILE.axis_center_us)])
 
 
 class TestButtonHysteresis(unittest.TestCase):

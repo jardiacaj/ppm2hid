@@ -63,7 +63,7 @@ def open_uinput_joystick(profile: Profile | None = None) -> int:
     for abs_code in all_abs:
         absmax[abs_code]  = axis_max
         absmin[abs_code]  = axis_min
-        absfuzz[abs_code] = 0              # kernel fuzz disabled; software deadband handles filtering
+        absfuzz[abs_code] = 0              # kernel fuzz disabled; software smoothing + deadzone handle filtering
         absflat[abs_code] = 50             # ~±50 µs flat zone snaps stick-at-rest to zero
 
     raw_name    = (profile.device_name or 'ppm2joy').encode()[:UINPUT_MAX_NAME_SIZE - 1]
@@ -74,7 +74,7 @@ def open_uinput_joystick(profile: Profile | None = None) -> int:
     #   __u32 ff_effects_max               — 0 = no force-feedback
     #   __s32 absmax[ABS_CNT]              — per-axis maximum values
     #   __s32 absmin[ABS_CNT]              — per-axis minimum values
-    #   __s32 absfuzz[ABS_CNT]             — kernel-level noise filter (disabled; we do SW deadband)
+    #   __s32 absfuzz[ABS_CNT]             — kernel-level noise filter (disabled; we do SW smoothing + deadzone)
     #   __s32 absflat[ABS_CNT]             — kernel flat zone at centre
     uinput_user_dev = struct.pack(
         f'{UINPUT_MAX_NAME_SIZE}s HHHH I {ABS_CNT}i {ABS_CNT}i {ABS_CNT}i {ABS_CNT}i',
@@ -116,7 +116,7 @@ def _flush_events(fd: int) -> None:
 # MARK: - Channel output state and event emission
 
 class ChannelOutputState:
-    """Tracks last-emitted values to apply deadband and avoid redundant events."""
+    """Tracks last-emitted values to suppress redundant events and feed the EMA accumulator."""
 
     def __init__(self, channel_map: list | None = None) -> None:
         if channel_map is None:
@@ -181,7 +181,10 @@ def emit_channel_events(fd: int, state: ChannelOutputState, ppm_frame: list[int]
     cm             = profile.channel_map
     axis_min       = profile.axis_min_us
     axis_max       = profile.axis_max_us
-    deadband       = profile.axis_deadband_us
+    axis_center    = profile.axis_center_us
+    # Central deadzone: ±deadzone_us around centre snaps to centre.
+    # axis_deadzone_pct is % of half-range, so multiply by (max-min)/200.
+    deadzone_us    = (axis_max - axis_min) * profile.axis_deadzone_pct // 200
     btn_threshold  = profile.button_threshold_us
     btn_hysteresis = profile.button_hysteresis_us
 
@@ -206,7 +209,9 @@ def emit_channel_events(fd: int, state: ChannelOutputState, ppm_frame: list[int]
             smoothed_f = 0.5 * value_us + 0.5 * state.axis_smoothed[abs_code]
             state.axis_smoothed[abs_code] = smoothed_f
             smoothed = round(smoothed_f)
-            if abs(smoothed - state.axis_values[abs_code]) >= deadband:
+            if deadzone_us > 0 and abs(smoothed - axis_center) <= deadzone_us:
+                smoothed = axis_center
+            if smoothed != state.axis_values[abs_code]:
                 state.axis_values[abs_code] = smoothed
                 _write_input_event(fd, EV_ABS, abs_code, smoothed)
 
